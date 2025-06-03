@@ -574,37 +574,72 @@ def create_interactive_calendar(json_file="reforestation_daily_data.json",
             
             // Planting activities
             if (day.planting_activities.length > 0) {{
+                // Group activities by trip number
+                const tripGroups = {{}};
+                day.planting_activities.forEach(activity => {{
+                    const tripNum = activity.trip_number || 1;
+                    if (!tripGroups[tripNum]) {{
+                        tripGroups[tripNum] = [];
+                    }}
+                    tripGroups[tripNum].push(activity);
+                }});
+                
                 modalContent += `
                     <div class="detail-section">
-                        <h4>🌱 Planting Activities</h4>
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Polygon</th>
-                                    <th>Species</th>
-                                    <th>Quantity</th>
-                                    <th>Cost</th>
-                                    <th>Treatment Time</th>
-                                </tr>
-                            </thead>
-                            <tbody>
+                        <h4>🌱 Planting Activities (Grouped by Trip)</h4>
+                        <p style="color: #666; margin-bottom: 15px; font-style: italic;">
+                            Total trips made: ${{Object.keys(tripGroups).length}} | 
+                            Total plants planted: ${{day.planting_activities.reduce((sum, a) => sum + a.quantity, 0).toLocaleString()}}
+                        </p>
                 `;
                 
-                day.planting_activities.forEach(activity => {{
+                // Display each trip group
+                Object.keys(tripGroups).sort((a, b) => parseInt(a) - parseInt(b)).forEach(tripNum => {{
+                    const tripActivities = tripGroups[tripNum];
+                    const tripTotal = tripActivities.reduce((sum, a) => sum + a.quantity, 0);
+                    const tripCost = tripActivities.reduce((sum, a) => sum + a.cost, 0);
+                    const tripPolygons = [...new Set(tripActivities.map(a => a.polygon_id))];
+                    
                     modalContent += `
-                        <tr>
-                            <td>P${{activity.polygon_id}}</td>
-                            <td>Species ${{activity.species_id}}</td>
-                            <td>${{activity.quantity.toLocaleString()}}</td>
-                            <td>$${{activity.cost.toLocaleString()}}</td>
-                            <td>${{activity.treatment_time.toFixed(2)}}h</td>
-                        </tr>
+                        <div class="trip-section" style="margin-bottom: 20px; border: 1px solid #e0e0e0; border-radius: 8px; padding: 15px; background-color: #f9f9f9;">
+                            <h5 style="margin: 0 0 10px 0; color: #2c5aa0;">
+                                🚛 Trip ${{tripNum}} → Polygon(s): ${{tripPolygons.join(', ')}} | 
+                                ${{tripTotal.toLocaleString()}} plants | 
+                                $${{tripCost.toLocaleString()}} cost
+                            </h5>
+                            <table style="width: 100%; font-size: 0.9em;">
+                                <thead>
+                                    <tr style="background-color: #e8f0fe;">
+                                        <th style="padding: 8px; text-align: left;">Polygon</th>
+                                        <th style="padding: 8px; text-align: left;">Species</th>
+                                        <th style="padding: 8px; text-align: right;">Quantity</th>
+                                        <th style="padding: 8px; text-align: right;">Cost</th>
+                                        <th style="padding: 8px; text-align: right;">Treatment Time</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                    `;
+                    
+                    tripActivities.forEach(activity => {{
+                        modalContent += `
+                            <tr>
+                                <td style="padding: 6px;">P${{activity.polygon_id}}</td>
+                                <td style="padding: 6px;">Species ${{activity.species_id}}</td>
+                                <td style="padding: 6px; text-align: right;">${{activity.quantity.toLocaleString()}}</td>
+                                <td style="padding: 6px; text-align: right;">$${{activity.cost.toLocaleString()}}</td>
+                                <td style="padding: 6px; text-align: right;">${{activity.treatment_time.toFixed(2)}}h</td>
+                            </tr>
+                        `;
+                    }});
+                    
+                    modalContent += `
+                                </tbody>
+                            </table>
+                        </div>
                     `;
                 }});
                 
                 modalContent += `
-                            </tbody>
-                        </table>
                     </div>
                 `;
             }}
@@ -630,6 +665,60 @@ def create_interactive_calendar(json_file="reforestation_daily_data.json",
                     </div>
                 </div>
             `;
+            
+            // Detailed warehouse breakdown by acclimation stage
+            if (day.warehouse_detailed_by_stage) {{
+                modalContent += `
+                    <div class="detail-section">
+                        <h4>🔄 Detailed Warehouse Breakdown by Acclimation Stage</h4>
+                        <p style="color: #666; margin-bottom: 15px; font-style: italic;">
+                            Plants must acclimate for 3 days before they can be planted
+                        </p>
+                `;
+                
+                const stages = [
+                    {{ key: 'stage_0_arriving_today', label: '📥 Stage 0: Arriving Today (Day 0)', color: '#ffebee' }},
+                    {{ key: 'stage_1_one_day_old', label: '⏳ Stage 1: One Day Old (Day 1)', color: '#fff3e0' }},
+                    {{ key: 'stage_2_two_days_old', label: '⏰ Stage 2: Two Days Old (Day 2)', color: '#e8f5e8' }},
+                    {{ key: 'stage_3_ready_for_planting', label: '✅ Stage 3: Ready for Planting (Day 3+)', color: '#e1f5fe' }}
+                ];
+                
+                stages.forEach(stage => {{
+                    const stageData = day.warehouse_detailed_by_stage[stage.key] || {{}};
+                    const stageTotal = Object.values(stageData).reduce((sum, qty) => sum + qty, 0);
+                    
+                    if (stageTotal > 0) {{
+                        modalContent += `
+                            <div style="margin-bottom: 15px; padding: 15px; background-color: ${{stage.color}}; border-radius: 8px; border-left: 4px solid #667eea;">
+                                <h5 style="margin: 0 0 10px 0; color: #333;">
+                                    ${{stage.label}} - Total: ${{stageTotal.toLocaleString()}} plants
+                                </h5>
+                                <div class="species-inventory">
+                        `;
+                        
+                        for (let i = 1; i <= 10; i++) {{
+                            const qty = stageData[i.toString()] || 0;
+                            if (qty > 0) {{
+                                modalContent += `
+                                    <div class="species-item" style="background-color: white; opacity: 0.9;">
+                                        <div><strong>S${{i}}</strong></div>
+                                        <div>${{qty.toLocaleString()}}</div>
+                                    </div>
+                                `;
+                            }}
+                        }}
+                        
+                        modalContent += `
+                                </div>
+                            </div>
+                        `;
+                    }}
+                }});
+                
+                modalContent += `
+                    </div>
+                `;
+            }}
             
             // Active polygons
             if (Object.keys(day.remaining_demand_by_polygon).length > 0) {{

@@ -26,12 +26,25 @@ class DailyDataCollector:
             "labor_hours_used": float(6.0 - state.remaining_labor_hours),
             "remaining_labor_hours": float(state.remaining_labor_hours),
             
-            # Detailed inventory by species
+            # Detailed inventory by species (TOTAL across all stages)
             "warehouse_inventory_by_species": {
-                str(i): int(state.available_inventory[i]) for i in range(1, 11)
+                str(i): int(
+                    state.acclim_stage_0[i] + 
+                    state.acclim_stage_1[i] + 
+                    state.acclim_stage_2[i] + 
+                    state.available_inventory[i]
+                ) for i in range(1, 11)
             },
             
-            # Acclimatization stages
+            # Detailed acclimation breakdown by species and stage
+            "warehouse_detailed_by_stage": {
+                "stage_0_arriving_today": {str(i): int(state.acclim_stage_0[i]) for i in range(1, 11)},
+                "stage_1_one_day_old": {str(i): int(state.acclim_stage_1[i]) for i in range(1, 11)},
+                "stage_2_two_days_old": {str(i): int(state.acclim_stage_2[i]) for i in range(1, 11)},
+                "stage_3_ready_for_planting": {str(i): int(state.available_inventory[i]) for i in range(1, 11)}
+            },
+            
+            # Acclimatization stages (kept for backward compatibility)
             "acclim_stage_0": {str(i): int(state.acclim_stage_0[i]) for i in range(1, 11)},
             "acclim_stage_1": {str(i): int(state.acclim_stage_1[i]) for i in range(1, 11)},
             "acclim_stage_2": {str(i): int(state.acclim_stage_2[i]) for i in range(1, 11)},
@@ -86,7 +99,8 @@ class DailyDataCollector:
                     "species_id": int(planting.species_id),
                     "quantity": int(planting.quantity),
                     "cost": float(planting.planting_cost),
-                    "treatment_time": float(planting.treatment_time)
+                    "treatment_time": float(planting.treatment_time),
+                    "trip_number": int(getattr(planting, 'trip_number', 1))  # Default to 1 for backward compatibility
                 }
                 day_data["planting_activities"].append(planting_data)
                 total_plants_planted_today += planting.quantity

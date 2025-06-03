@@ -495,7 +495,7 @@ class PolygonStrategy(OptimizationStrategy):
             print(f"   Travel: {travel_time:.3f}h each way, Labor remaining: {self.state.remaining_labor_hours:.2f}h")
             
             # PRIORITY 1: SCALED OPUNTIA TRIPS (maximize truck efficiency)
-            if self._try_scaled_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day):
+            if self._try_scaled_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day, total_trips + 1):
                 total_trips += 1
                 plants_planted = True
                 trip_made = True
@@ -505,7 +505,7 @@ class PolygonStrategy(OptimizationStrategy):
                 continue
             
             # PRIORITY 2: SCALED NON-OPUNTIA TRIPS (maximize truck efficiency)
-            if self._try_scaled_non_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day):
+            if self._try_scaled_non_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day, total_trips + 1):
                 total_trips += 1
                 plants_planted = True
                 trip_made = True
@@ -514,7 +514,7 @@ class PolygonStrategy(OptimizationStrategy):
                 continue
             
             # PRIORITY 3: EFFICIENT MIXED TRIPS (plant multiple species efficiently)
-            mixed_trip_result = self._try_efficient_mixed_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day)
+            mixed_trip_result = self._try_efficient_mixed_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day, total_trips + 1)
             if mixed_trip_result:
                 total_trips += 1
                 plants_planted = True
@@ -524,7 +524,7 @@ class PolygonStrategy(OptimizationStrategy):
                 continue
             
             # PRIORITY 4: SINGLE SPECIES TRIPS (use remaining time efficiently)
-            single_trip_result = self._try_single_species_trip(polygon_id, polygon_demand, travel_time, return_time)
+            single_trip_result = self._try_single_species_trip(polygon_id, polygon_demand, travel_time, return_time, total_trips + 1)
             if single_trip_result:
                 total_trips += 1
                 plants_planted = True
@@ -567,7 +567,7 @@ class PolygonStrategy(OptimizationStrategy):
         
         return plants_planted
     
-    def _try_scaled_opuntia_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float, max_plants_per_day: int) -> bool:
+    def _try_scaled_opuntia_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float, max_plants_per_day: int, trip_number: int) -> bool:
         """Try to plant a scaled opuntia trip (species 5,6,7,8 with 20 min treatment)"""
         # Opuntia proportions per hectare: {5: 39, 6: 30, 7: 58, 8: 51} = 178 total
         # Scale to 524 truck capacity: 524/178 = 2.94x
@@ -608,7 +608,7 @@ class PolygonStrategy(OptimizationStrategy):
         
         # Execute the trip
         for species_id, quantity in scaled_opuntia_requirements.items():
-            self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time)
+            self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time, trip_number)
         
         # Update labor hours
         self.state.remaining_labor_hours -= total_time
@@ -616,7 +616,7 @@ class PolygonStrategy(OptimizationStrategy):
         
         return True
     
-    def _try_scaled_non_opuntia_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float, max_plants_per_day: int) -> bool:
+    def _try_scaled_non_opuntia_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float, max_plants_per_day: int, trip_number: int) -> bool:
         """Try to plant a scaled non-opuntia trip (species 1,2,3,4,9,10 with 1 hour treatment)"""
         # Non-opuntia proportions per hectare: {1: 33, 2: 157, 3: 33, 4: 33, 9: 69, 10: 21} = 346 total
         # Scale to 524 truck capacity: 524/346 = 1.51x
@@ -657,7 +657,7 @@ class PolygonStrategy(OptimizationStrategy):
         
         # Execute the trip
         for species_id, quantity in scaled_non_opuntia_requirements.items():
-            self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time)
+            self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time, trip_number)
         
         # Update labor hours
         self.state.remaining_labor_hours -= total_time
@@ -665,7 +665,7 @@ class PolygonStrategy(OptimizationStrategy):
         
         return True
     
-    def _try_efficient_mixed_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float, max_plants_per_day: int) -> bool:
+    def _try_efficient_mixed_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float, max_plants_per_day: int, trip_number: int) -> bool:
         """Try to plant a mixed trip that plants multiple species efficiently"""
         # Collect available plants by treatment type
         available_opuntias = {}
@@ -682,47 +682,77 @@ class PolygonStrategy(OptimizationStrategy):
                 else:
                     available_non_opuntias[species_id] = plantable
         
-        # Try opuntias first (shorter treatment time) - MINIMUM 1 PLANT
+        trips_completed = 0
+        
+        # Try opuntias first (shorter treatment time) - STRICT VAN CAPACITY
         opuntia_planted = False
         if available_opuntias:
+            # Calculate total and enforce strict van capacity limit
             total_opuntias = sum(available_opuntias.values())
-            if total_opuntias >= 1:  # AGGRESSIVE: Plant even 1 plant!
+            
+            # CRITICAL: Limit to VAN_CAPACITY for this single trip
+            if total_opuntias > VAN_CAPACITY:
+                scale_factor = VAN_CAPACITY / total_opuntias
+                for species_id in available_opuntias:
+                    available_opuntias[species_id] = int(available_opuntias[species_id] * scale_factor)
+                total_opuntias = sum(available_opuntias.values())
+            
+            # Only proceed if we have plants and they fit in one van
+            if total_opuntias >= 1 and total_opuntias <= VAN_CAPACITY:
                 trip_time = travel_time + return_time + 1.0
                 treatment_time = get_treatment_time(5, 1)  # 0.33 hours
                 total_time = trip_time + treatment_time
                 
                 if self.state.remaining_labor_hours >= total_time:
-                    print(f"🌵 AGGRESSIVE OPUNTIA TRIP: {total_opuntias} plants available (ANY AMOUNT)")
+                    opuntia_trip_number = trip_number + trips_completed
+                    print(f"🌵 EFFICIENT OPUNTIA TRIP #{opuntia_trip_number}: {total_opuntias} plants (STRICT VAN CAPACITY)")
                     
+                    # Execute all species in this single trip
                     for species_id, quantity in available_opuntias.items():
-                        self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time)
+                        if quantity > 0:
+                            self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time, opuntia_trip_number)
                     
                     self.state.remaining_labor_hours -= total_time
-                    print(f"Aggressive opuntia trip completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
+                    print(f"Opuntia trip #{opuntia_trip_number} completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
                     opuntia_planted = True
+                    trips_completed += 1
         
-        # Try non-opuntias if we still have labor time - MINIMUM 1 PLANT  
+        # Try non-opuntias if we still have labor time - SEPARATE TRIP WITH STRICT VAN CAPACITY
         non_opuntia_planted = False
         if self.state.remaining_labor_hours > 1.5 and available_non_opuntias:
+            # Calculate total and enforce strict van capacity limit
             total_non_opuntias = sum(available_non_opuntias.values())
-            if total_non_opuntias >= 1:  # AGGRESSIVE: Plant even 1 plant!
+            
+            # CRITICAL: Limit to VAN_CAPACITY for this single trip
+            if total_non_opuntias > VAN_CAPACITY:
+                scale_factor = VAN_CAPACITY / total_non_opuntias
+                for species_id in available_non_opuntias:
+                    available_non_opuntias[species_id] = int(available_non_opuntias[species_id] * scale_factor)
+                total_non_opuntias = sum(available_non_opuntias.values())
+            
+            # Only proceed if we have plants and they fit in one van
+            if total_non_opuntias >= 1 and total_non_opuntias <= VAN_CAPACITY:
                 trip_time = travel_time + return_time + 1.0
                 treatment_time = get_treatment_time(1, 1)  # 1 hour
                 total_time = trip_time + treatment_time
                 
                 if self.state.remaining_labor_hours >= total_time:
-                    print(f"🌱 AGGRESSIVE NON-OPUNTIA TRIP: {total_non_opuntias} plants available (ANY AMOUNT)")
+                    non_opuntia_trip_number = trip_number + trips_completed
+                    print(f"🌱 EFFICIENT NON-OPUNTIA TRIP #{non_opuntia_trip_number}: {total_non_opuntias} plants (STRICT VAN CAPACITY)")
                     
+                    # Execute all species in this separate trip
                     for species_id, quantity in available_non_opuntias.items():
-                        self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time)
+                        if quantity > 0:
+                            self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time, non_opuntia_trip_number)
                     
                     self.state.remaining_labor_hours -= total_time
-                    print(f"Aggressive non-opuntia trip completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
+                    print(f"Non-opuntia trip #{non_opuntia_trip_number} completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
                     non_opuntia_planted = True
+                    trips_completed += 1
         
         return opuntia_planted or non_opuntia_planted
     
-    def _try_single_species_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float) -> bool:
+    def _try_single_species_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float, trip_number: int) -> bool:
         """Try to plant a single species trip that uses remaining time efficiently"""
         # Find the species with the most available plants that has demand
         best_species = None
@@ -755,7 +785,7 @@ class PolygonStrategy(OptimizationStrategy):
         print(f"🚛 SINGLE SPECIES TRIP: {plants_to_take} of species {best_species}")
         
         # Execute the trip
-        self._execute_planting(polygon_id, best_species, plants_to_take, travel_time, best_treatment_time)
+        self._execute_planting(polygon_id, best_species, plants_to_take, travel_time, best_treatment_time, trip_number)
         
         # Update labor hours
         self.state.remaining_labor_hours -= total_time
@@ -763,7 +793,7 @@ class PolygonStrategy(OptimizationStrategy):
         
         return True
     
-    def _execute_planting(self, polygon_id: int, species_id: int, quantity: int, travel_time: float, treatment_time: float):
+    def _execute_planting(self, polygon_id: int, species_id: int, quantity: int, travel_time: float, treatment_time: float, trip_number: int = 1):
         """Execute the actual planting of a species"""
         # Create transportation activity
         transport = TransportationActivity(
@@ -778,14 +808,15 @@ class PolygonStrategy(OptimizationStrategy):
             transport_cost=0
         )
         
-        # Create planting activity
+        # Create planting activity with trip number
         planting = PlantingActivity(
             day=self.state.current_day,
             polygon_id=polygon_id,
             species_id=species_id,
             quantity=quantity,
             treatment_time=treatment_time,
-            planting_cost=calculate_planting_cost(quantity)
+            planting_cost=calculate_planting_cost(quantity),
+            trip_number=trip_number  # Add trip number to planting activity
         )
         
         # Update state
@@ -795,4 +826,4 @@ class PolygonStrategy(OptimizationStrategy):
         self.state.planting_activities.append(planting)
         self.state.total_cost += planting.planting_cost
         
-        print(f"  Species {species_id}: planted {quantity:,} plants")
+        print(f"  Trip {trip_number} - Species {species_id}: planted {quantity:,} plants")

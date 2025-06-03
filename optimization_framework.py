@@ -31,6 +31,7 @@ class PlantingActivity:
     quantity: int
     treatment_time: float  # in hours
     planting_cost: float
+    trip_number: int = 1  # Trip number within the day
 
 @dataclass
 class TransportationActivity:
