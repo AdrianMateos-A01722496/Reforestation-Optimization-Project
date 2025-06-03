@@ -12,7 +12,8 @@ from utils import (
     get_available_providers_for_species,
     VAN_CAPACITY, WAREHOUSE_CAPACITY, MAX_PLANTS_ORDER_PER_PROVIDER_PER_DAY,
     BASE_ID, LABOR_TIME, PLANTATION_COST_PER_PLANT, PROVIDER_COSTS, SPECIES_IDS,
-    SPECIES_PROPORTIONS, WAREHOUSE_PROPORTIONS, PROVIDER_SPECIES
+    SPECIES_PROPORTIONS, WAREHOUSE_PROPORTIONS, OPTIMAL_PROVIDER_ALLOCATION,
+    OPUNTIA_SPECIES_IDS
 )
 
 class PolygonStrategy(OptimizationStrategy):
@@ -206,8 +207,8 @@ class PolygonStrategy(OptimizationStrategy):
             if order_created:
                 break
                 
-            # Get species this provider actually supplies (from PROVIDER_COSTS)
-            available_species = list(PROVIDER_COSTS[provider].keys())
+            # Get species this provider should supply (from OPTIMAL_PROVIDER_ALLOCATION)
+            available_species = OPTIMAL_PROVIDER_ALLOCATION.get(provider, [])
             order_quantities = []
             
             # Prioritize species needed for the next polygon
@@ -323,7 +324,7 @@ class PolygonStrategy(OptimizationStrategy):
         return order_created
     
     def _plant_available_plants(self) -> bool:
-        """Try to plant available plants. Returns True if any plants were planted."""
+        """Try to plant available plants using treatment-time-aware strategy. Returns True if any plants were planted."""
         plants_planted = False
         
         # Get next polygon to plant
@@ -338,127 +339,217 @@ class PolygonStrategy(OptimizationStrategy):
         # Get demand for this polygon
         polygon_demand = self.state.remaining_demand.loc[polygon_id]
         
-        # Find species that we can actually plant (have both inventory and demand)
-        species_to_plant = []
-        total_plants_to_plant = 0
-        
-        for species_id in range(1, 11):
-            available = self.state.available_inventory[species_id]
-            demand = polygon_demand[species_id]
-            
-            if demand > 0 and available > 0:
-                # Plant as much as we can of this species (up to demand and available inventory)
-                plants_to_plant = min(available, demand)
-                species_to_plant.append((species_id, plants_to_plant))
-                total_plants_to_plant += plants_to_plant
-                print(f"Species {species_id}: planning to plant {plants_to_plant:,} (available: {available:,}, demand: {demand:,})")
-        
-        if not species_to_plant:
-            print("No plantable species (no species with both inventory and demand)")
-            return False
-        
-        # Limit by daily capacity - scale down proportionally if needed
-        if total_plants_to_plant > max_plants_per_day:
-            scale_factor = max_plants_per_day / total_plants_to_plant
-            species_to_plant = [
-                (species_id, int(plants * scale_factor))
-                for species_id, plants in species_to_plant
-            ]
-            total_plants_to_plant = sum(plants for _, plants in species_to_plant)
-            print(f"Scaled down to daily capacity: {total_plants_to_plant:,} plants")
-        
-        # Only proceed if we have a meaningful amount to plant
-        # Be more flexible for small remaining quantities that could complete species
-        min_worthwhile_plants = max(50, VAN_CAPACITY // 10)  # At least 50 plants or 1/10 van load
-        
-        # But be very aggressive if we're near completion
-        total_remaining_demand = self.state.remaining_demand.sum().sum()
-        if total_remaining_demand < VAN_CAPACITY * 5:  # Less than 5 van loads remaining total
-            min_worthwhile_plants = 10  # Plant even very small quantities
-        
-        # Allow smaller quantities if they would complete a species in this polygon
-        allow_small_completion = False
-        for species_id, plants_to_plant in species_to_plant:
-            remaining_after_planting = polygon_demand[species_id] - plants_to_plant
-            if remaining_after_planting == 0:  # This would complete the species
-                allow_small_completion = True
-                break
-        
-        if total_plants_to_plant < min_worthwhile_plants and not allow_small_completion:
-            print(f"Not enough plants to make worthwhile trip: {total_plants_to_plant} < {min_worthwhile_plants}")
-            return False
+        print(f"\nEvaluating planting options for polygon {polygon_id}")
+        print(f"Max plants per day: {max_plants_per_day:,}")
         
         # Check labor time
         travel_time = self.time_matrix.loc[BASE_ID, polygon_id]
         return_time = self.time_matrix.loc[polygon_id, BASE_ID]
-        trips_needed = (total_plants_to_plant + VAN_CAPACITY - 1) // VAN_CAPACITY
-        total_trip_time = trips_needed * (travel_time + return_time + 1.0)
         
-        if self.state.remaining_labor_hours < total_trip_time:
-            print(f"Not enough labor hours: {self.state.remaining_labor_hours:.2f} < {total_trip_time:.2f}")
-            return False
+        # PRIORITY 1: SCALED OPUNTIA TRIPS (20 min treatment, species 5,6,7,8)
+        opuntia_planted = self._try_scaled_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day)
+        if opuntia_planted:
+            plants_planted = True
         
-        print(f"Planning to plant {total_plants_to_plant:,} plants across {len(species_to_plant)} species")
-        print(f"Need {trips_needed} trips, total time: {total_trip_time:.2f}h")
-        
-        # Calculate maximum treatment time needed for all species being planted
-        max_treatment_time = max(get_treatment_time(species_id, 1) for species_id, _ in species_to_plant)
-        print(f"Treatment time required: {max_treatment_time:.2f}h (max among all species)")
-        
-        # Plant each species
-        for species_id, plants_of_this_species in species_to_plant:
-            if plants_of_this_species > 0:
-                # Create transportation activity
-                transport = TransportationActivity(
-                    day=self.state.current_day,
-                    from_polygon=BASE_ID,
-                    to_polygon=polygon_id,
-                    species_id=species_id,
-                    quantity=plants_of_this_species,
-                    travel_time=travel_time * (plants_of_this_species / total_plants_to_plant),
-                    load_time=0.5 * (plants_of_this_species / total_plants_to_plant),
-                    unload_time=0.5 * (plants_of_this_species / total_plants_to_plant),
-                    transport_cost=0
-                )
-                
-                # Create planting activity - show individual treatment time for each species (for display)
-                # The actual labor time calculation will only count max_treatment_time once
-                individual_treatment_time = get_treatment_time(species_id, 1)
-                
-                planting = PlantingActivity(
-                    day=self.state.current_day,
-                    polygon_id=polygon_id,
-                    species_id=species_id,
-                    quantity=plants_of_this_species,
-                    treatment_time=individual_treatment_time,
-                    planting_cost=calculate_planting_cost(plants_of_this_species)
-                )
-                
-                # Update state
-                self.state.available_inventory[species_id] -= plants_of_this_species
-                self.state.remaining_demand.loc[polygon_id, species_id] -= plants_of_this_species
-                self.state.transportation_activities.append(transport)
-                self.state.planting_activities.append(planting)
-                self.state.total_cost += planting.planting_cost
-                
+        # PRIORITY 2: SCALED NON-OPUNTIA TRIPS (1 hour treatment, species 1,2,3,4,9,10)
+        if self.state.remaining_labor_hours > 0:
+            non_opuntia_planted = self._try_scaled_non_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day)
+            if non_opuntia_planted:
                 plants_planted = True
-                print(f"Planted {plants_of_this_species:,} plants of species {species_id} (treatment: {individual_treatment_time:.2f}h)")
         
-        # Update labor hours - use max treatment time only once, plus trip time
-        total_labor_time = total_trip_time + max_treatment_time
-        self.state.remaining_labor_hours -= total_labor_time
-        
-        if plants_planted:
-            print(f"Successfully planted {total_plants_to_plant:,} plants in polygon {polygon_id}")
-            print(f"Remaining labor: {self.state.remaining_labor_hours:.2f}h")
-            
-            # Check if polygon is complete
-            remaining_demand_in_polygon = self.state.remaining_demand.loc[polygon_id].sum()
-            if remaining_demand_in_polygon == 0:
-                print(f"🎉 Polygon {polygon_id} is now COMPLETE!")
-            else:
-                print(f"Polygon {polygon_id} still needs {remaining_demand_in_polygon:,} more plants")
-        else:
-            print("No plants were planted this iteration")
+        # PRIORITY 3: PARTIAL TRIPS (maximize labor utilization)
+        if self.state.remaining_labor_hours > 2.0:  # Need at least 2 hours for a meaningful trip
+            partial_planted = self._try_partial_trip(polygon_id, polygon_demand, travel_time, return_time)
+            if partial_planted:
+                plants_planted = True
         
         return plants_planted
+    
+    def _try_scaled_opuntia_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float, max_plants_per_day: int) -> bool:
+        """Try to plant a scaled opuntia trip (species 5,6,7,8 with 20 min treatment)"""
+        # Opuntia proportions per hectare: {5: 39, 6: 30, 7: 58, 8: 51} = 178 total
+        # Scale to 524 truck capacity: 524/178 = 2.94x
+        # Scaled: {5: 115, 6: 88, 7: 170, 8: 150} = 523 plants
+        
+        opuntia_proportions = {5: 39, 6: 30, 7: 58, 8: 51}
+        total_opuntia_per_hectare = sum(opuntia_proportions.values())  # 178
+        scale_factor = VAN_CAPACITY / total_opuntia_per_hectare  # 2.94
+        
+        scaled_opuntia_requirements = {
+            species_id: int(proportion * scale_factor)
+            for species_id, proportion in opuntia_proportions.items()
+        }
+        
+        # Check if we have enough inventory and demand for a scaled opuntia trip
+        can_do_scaled_trip = True
+        for species_id, required in scaled_opuntia_requirements.items():
+            available = self.state.available_inventory[species_id]
+            demand = polygon_demand[species_id]
+            
+            if available < required or demand < required:
+                can_do_scaled_trip = False
+                break
+        
+        if not can_do_scaled_trip:
+            return False
+        
+        # Calculate trip requirements
+        total_plants = sum(scaled_opuntia_requirements.values())
+        trip_time = travel_time + return_time + 1.0  # Include load/unload
+        treatment_time = get_treatment_time(5, 1)  # 0.33 hours for opuntias
+        total_time = trip_time + treatment_time
+        
+        if self.state.remaining_labor_hours < total_time or total_plants > max_plants_per_day:
+            return False
+        
+        print(f"🌵 SCALED OPUNTIA TRIP: {total_plants} plants (species 5,6,7,8)")
+        
+        # Execute the trip
+        for species_id, quantity in scaled_opuntia_requirements.items():
+            self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time)
+        
+        # Update labor hours
+        self.state.remaining_labor_hours -= total_time
+        print(f"Opuntia trip completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
+        
+        return True
+    
+    def _try_scaled_non_opuntia_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float, max_plants_per_day: int) -> bool:
+        """Try to plant a scaled non-opuntia trip (species 1,2,3,4,9,10 with 1 hour treatment)"""
+        # Non-opuntia proportions per hectare: {1: 33, 2: 157, 3: 33, 4: 33, 9: 69, 10: 21} = 346 total
+        # Scale to 524 truck capacity: 524/346 = 1.51x
+        # Scaled: {1: 50, 2: 237, 3: 50, 4: 50, 9: 104, 10: 32} = 523 plants
+        
+        non_opuntia_proportions = {1: 33, 2: 157, 3: 33, 4: 33, 9: 69, 10: 21}
+        total_non_opuntia_per_hectare = sum(non_opuntia_proportions.values())  # 346
+        scale_factor = VAN_CAPACITY / total_non_opuntia_per_hectare  # 1.51
+        
+        scaled_non_opuntia_requirements = {
+            species_id: int(proportion * scale_factor)
+            for species_id, proportion in non_opuntia_proportions.items()
+        }
+        
+        # Check if we have enough inventory and demand for a scaled non-opuntia trip
+        can_do_scaled_trip = True
+        for species_id, required in scaled_non_opuntia_requirements.items():
+            available = self.state.available_inventory[species_id]
+            demand = polygon_demand[species_id]
+            
+            if available < required or demand < required:
+                can_do_scaled_trip = False
+                break
+        
+        if not can_do_scaled_trip:
+            return False
+        
+        # Calculate trip requirements
+        total_plants = sum(scaled_non_opuntia_requirements.values())
+        trip_time = travel_time + return_time + 1.0  # Include load/unload
+        treatment_time = get_treatment_time(1, 1)  # 1 hour for non-opuntias
+        total_time = trip_time + treatment_time
+        
+        if self.state.remaining_labor_hours < total_time or total_plants > max_plants_per_day:
+            return False
+        
+        print(f"🌱 SCALED NON-OPUNTIA TRIP: {total_plants} plants (species 1,2,3,4,9,10)")
+        
+        # Execute the trip
+        for species_id, quantity in scaled_non_opuntia_requirements.items():
+            self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time)
+        
+        # Update labor hours
+        self.state.remaining_labor_hours -= total_time
+        print(f"Non-opuntia trip completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
+        
+        return True
+    
+    def _try_partial_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float) -> bool:
+        """Try to plant available plants in proper proportions (maximize labor utilization)"""
+        # Collect available plants by treatment type
+        available_opuntias = {}
+        available_non_opuntias = {}
+        
+        for species_id in range(1, 11):
+            available = self.state.available_inventory[species_id]
+            demand = polygon_demand[species_id]
+            plantable = min(available, demand)
+            
+            if plantable > 0:
+                if species_id in OPUNTIA_SPECIES_IDS:
+                    available_opuntias[species_id] = plantable
+                else:
+                    available_non_opuntias[species_id] = plantable
+        
+        # Try opuntias first (shorter treatment time)
+        opuntia_planted = False
+        if available_opuntias:
+            total_opuntias = sum(available_opuntias.values())
+            if total_opuntias >= 40:  # Minimum worthwhile amount
+                trip_time = travel_time + return_time + 1.0
+                treatment_time = get_treatment_time(5, 1)  # 0.33 hours
+                total_time = trip_time + treatment_time
+                
+                if self.state.remaining_labor_hours >= total_time:
+                    print(f"🌵 PARTIAL OPUNTIA TRIP: {total_opuntias} plants available")
+                    
+                    for species_id, quantity in available_opuntias.items():
+                        self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time)
+                    
+                    self.state.remaining_labor_hours -= total_time
+                    print(f"Partial opuntia trip completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
+                    opuntia_planted = True
+        
+        # Try non-opuntias if we still have labor time
+        non_opuntia_planted = False
+        if self.state.remaining_labor_hours > 2.0 and available_non_opuntias:
+            total_non_opuntias = sum(available_non_opuntias.values())
+            if total_non_opuntias >= 40:  # Minimum worthwhile amount
+                trip_time = travel_time + return_time + 1.0
+                treatment_time = get_treatment_time(1, 1)  # 1 hour
+                total_time = trip_time + treatment_time
+                
+                if self.state.remaining_labor_hours >= total_time:
+                    print(f"🌱 PARTIAL NON-OPUNTIA TRIP: {total_non_opuntias} plants available")
+                    
+                    for species_id, quantity in available_non_opuntias.items():
+                        self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time)
+                    
+                    self.state.remaining_labor_hours -= total_time
+                    print(f"Partial non-opuntia trip completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
+                    non_opuntia_planted = True
+        
+        return opuntia_planted or non_opuntia_planted
+    
+    def _execute_planting(self, polygon_id: int, species_id: int, quantity: int, travel_time: float, treatment_time: float):
+        """Execute the actual planting of a species"""
+        # Create transportation activity
+        transport = TransportationActivity(
+            day=self.state.current_day,
+            from_polygon=BASE_ID,
+            to_polygon=polygon_id,
+            species_id=species_id,
+            quantity=quantity,
+            travel_time=travel_time,
+            load_time=0.5,
+            unload_time=0.5,
+            transport_cost=0
+        )
+        
+        # Create planting activity
+        planting = PlantingActivity(
+            day=self.state.current_day,
+            polygon_id=polygon_id,
+            species_id=species_id,
+            quantity=quantity,
+            treatment_time=treatment_time,
+            planting_cost=calculate_planting_cost(quantity)
+        )
+        
+        # Update state
+        self.state.available_inventory[species_id] -= quantity
+        self.state.remaining_demand.loc[polygon_id, species_id] -= quantity
+        self.state.transportation_activities.append(transport)
+        self.state.planting_activities.append(planting)
+        self.state.total_cost += planting.planting_cost
+        
+        print(f"  Species {species_id}: planted {quantity:,} plants")

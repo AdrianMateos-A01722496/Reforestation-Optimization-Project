@@ -55,11 +55,11 @@ WAREHOUSE_PROPORTIONS = {
     10: 400   # 4.00%
 }
 
-# This is the ideal species to buy from each provider
-PROVIDER_SPECIES = {
-    'laguna_seca': [1, 2, 3, 6, 7],
-    'venado': [4, 5, 6, 7, 8],
-    'moctezuma': [3, 4, 5, 7, 9, 10]
+# Optimal allocation of species to providers for minimum cost and balanced workload
+OPTIMAL_PROVIDER_ALLOCATION = {
+    'laguna_seca': [1, 2, 3],
+    'venado': [4, 6, 8],
+    'moctezuma': [5, 7, 9, 10]
 }
 
 def calculate_order_cost(order) -> float:
