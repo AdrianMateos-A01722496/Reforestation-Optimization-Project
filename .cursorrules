@@ -1,0 +1,5 @@
+# Rules to follow
+
+- Dont attempt to modify notebook (.ipynb) files, since this can cause issues.
+- Maintain code comments short, plain and simple.
+- Double check your work and minimize mistakes.
