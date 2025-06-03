@@ -666,8 +666,8 @@ class PolygonStrategy(OptimizationStrategy):
         return True
     
     def _try_efficient_mixed_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float, max_plants_per_day: int, trip_number: int) -> bool:
-        """Try to plant a mixed trip that plants multiple species efficiently"""
-        # Collect available plants by treatment type
+        """Try to plant a mixed trip that plants multiple species efficiently - STRICT VAN CAPACITY"""
+        # Collect ALL available plants by treatment type
         available_opuntias = {}
         available_non_opuntias = {}
         
@@ -682,75 +682,72 @@ class PolygonStrategy(OptimizationStrategy):
                 else:
                     available_non_opuntias[species_id] = plantable
         
-        trips_completed = 0
+        # Combine ALL plants for ONE TRIP - respecting 524 limit
+        all_species_to_plant = {}
+        all_species_to_plant.update(available_opuntias)
+        all_species_to_plant.update(available_non_opuntias)
         
-        # Try opuntias first (shorter treatment time) - STRICT VAN CAPACITY
-        opuntia_planted = False
-        if available_opuntias:
-            # Calculate total and enforce strict van capacity limit
-            total_opuntias = sum(available_opuntias.values())
-            
-            # CRITICAL: Limit to VAN_CAPACITY for this single trip
-            if total_opuntias > VAN_CAPACITY:
-                scale_factor = VAN_CAPACITY / total_opuntias
-                for species_id in available_opuntias:
-                    available_opuntias[species_id] = int(available_opuntias[species_id] * scale_factor)
-                total_opuntias = sum(available_opuntias.values())
-            
-            # Only proceed if we have plants and they fit in one van
-            if total_opuntias >= 1 and total_opuntias <= VAN_CAPACITY:
-                trip_time = travel_time + return_time + 1.0
-                treatment_time = get_treatment_time(5, 1)  # 0.33 hours
-                total_time = trip_time + treatment_time
-                
-                if self.state.remaining_labor_hours >= total_time:
-                    opuntia_trip_number = trip_number + trips_completed
-                    print(f"🌵 EFFICIENT OPUNTIA TRIP #{opuntia_trip_number}: {total_opuntias} plants (STRICT VAN CAPACITY)")
-                    
-                    # Execute all species in this single trip
-                    for species_id, quantity in available_opuntias.items():
-                        if quantity > 0:
-                            self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time, opuntia_trip_number)
-                    
-                    self.state.remaining_labor_hours -= total_time
-                    print(f"Opuntia trip #{opuntia_trip_number} completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
-                    opuntia_planted = True
-                    trips_completed += 1
+        if not all_species_to_plant:
+            return False
         
-        # Try non-opuntias if we still have labor time - SEPARATE TRIP WITH STRICT VAN CAPACITY
-        non_opuntia_planted = False
-        if self.state.remaining_labor_hours > 1.5 and available_non_opuntias:
-            # Calculate total and enforce strict van capacity limit
-            total_non_opuntias = sum(available_non_opuntias.values())
-            
-            # CRITICAL: Limit to VAN_CAPACITY for this single trip
-            if total_non_opuntias > VAN_CAPACITY:
-                scale_factor = VAN_CAPACITY / total_non_opuntias
-                for species_id in available_non_opuntias:
-                    available_non_opuntias[species_id] = int(available_non_opuntias[species_id] * scale_factor)
-                total_non_opuntias = sum(available_non_opuntias.values())
-            
-            # Only proceed if we have plants and they fit in one van
-            if total_non_opuntias >= 1 and total_non_opuntias <= VAN_CAPACITY:
-                trip_time = travel_time + return_time + 1.0
-                treatment_time = get_treatment_time(1, 1)  # 1 hour
-                total_time = trip_time + treatment_time
-                
-                if self.state.remaining_labor_hours >= total_time:
-                    non_opuntia_trip_number = trip_number + trips_completed
-                    print(f"🌱 EFFICIENT NON-OPUNTIA TRIP #{non_opuntia_trip_number}: {total_non_opuntias} plants (STRICT VAN CAPACITY)")
-                    
-                    # Execute all species in this separate trip
-                    for species_id, quantity in available_non_opuntias.items():
-                        if quantity > 0:
-                            self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time, non_opuntia_trip_number)
-                    
-                    self.state.remaining_labor_hours -= total_time
-                    print(f"Non-opuntia trip #{non_opuntia_trip_number} completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
-                    non_opuntia_planted = True
-                    trips_completed += 1
+        # Calculate total plants and ENFORCE 524 LIMIT
+        total_plants_desired = sum(all_species_to_plant.values())
         
-        return opuntia_planted or non_opuntia_planted
+        if total_plants_desired > VAN_CAPACITY:
+            # Scale down proportionally to fit in van
+            scale_factor = VAN_CAPACITY / total_plants_desired
+            print(f"⚠️  Scaling down {total_plants_desired} plants to fit van capacity: {scale_factor:.3f}x")
+            
+            for species_id in all_species_to_plant:
+                all_species_to_plant[species_id] = int(all_species_to_plant[species_id] * scale_factor)
+        
+        # Recalculate actual total after scaling
+        actual_total_plants = sum(all_species_to_plant.values())
+        
+        # Safety check - should never exceed 524
+        if actual_total_plants > VAN_CAPACITY:
+            print(f"❌ SAFETY CHECK FAILED: {actual_total_plants} > {VAN_CAPACITY}")
+            return False
+        
+        if actual_total_plants == 0:
+            return False
+        
+        # Determine treatment time based on species mix
+        has_opuntias = any(species_id in OPUNTIA_SPECIES_IDS for species_id in all_species_to_plant)
+        has_non_opuntias = any(species_id not in OPUNTIA_SPECIES_IDS for species_id in all_species_to_plant)
+        
+        if has_opuntias and has_non_opuntias:
+            # Mixed trip - use longer treatment time (non-opuntia = 1 hour)
+            treatment_time = get_treatment_time(1, 1)  # 1 hour for mixed
+            trip_type = "MIXED"
+        elif has_opuntias:
+            # Only opuntias - use shorter treatment time
+            treatment_time = get_treatment_time(5, 1)  # 0.33 hours
+            trip_type = "OPUNTIA"
+        else:
+            # Only non-opuntias - use longer treatment time
+            treatment_time = get_treatment_time(1, 1)  # 1 hour
+            trip_type = "NON-OPUNTIA"
+        
+        # Calculate total trip time
+        trip_time = travel_time + return_time + 1.0  # Include load/unload
+        total_time = trip_time + treatment_time
+        
+        if self.state.remaining_labor_hours < total_time:
+            return False
+        
+        print(f"🚛 EFFICIENT {trip_type} TRIP #{trip_number}: {actual_total_plants} plants (STRICT VAN CAPACITY)")
+        
+        # Execute ALL species in this SINGLE trip with the SAME trip number
+        for species_id, quantity in all_species_to_plant.items():
+            if quantity > 0:
+                self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time, trip_number)
+        
+        # Update labor hours once for the entire trip
+        self.state.remaining_labor_hours -= total_time
+        print(f"{trip_type.title()} trip #{trip_number} completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
+        
+        return True
     
     def _try_single_species_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float, trip_number: int) -> bool:
         """Try to plant a single species trip that uses remaining time efficiently"""
