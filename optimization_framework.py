@@ -160,7 +160,9 @@ class SupplyChainState:
         self._record_daily_state()
         
         # Move plants through acclimation stages
-        self.available_inventory = self.acclim_stage_2.copy()
+        for species_id in range(1, 11):
+            self.available_inventory[species_id] += self.acclim_stage_2[species_id]
+        
         self.acclim_stage_2 = self.acclim_stage_1.copy()
         self.acclim_stage_1 = self.acclim_stage_0.copy()
         self.acclim_stage_0 = {i: 0 for i in range(1, 11)}
