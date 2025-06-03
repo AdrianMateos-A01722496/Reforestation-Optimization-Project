@@ -83,10 +83,28 @@ class PolygonStrategy(OptimizationStrategy):
                 if not ordered and current_demand < 1000:
                     print("Weekend: no orders placed, skipping to next day")
             else:
-                # Try to plant available plants first
+                # WEEKDAY: AGGRESSIVE PLANTING - Always try to plant first!
+                print(f"\n📅 WEEKDAY {self.state.current_day}: AGGRESSIVE PLANTING MODE")
+                print(f"Current inventory: {current_inventory:,} plants")
+                
+                # Try to plant available plants first - be very aggressive
                 planted_any = self._plant_available_plants()
                 
-                # If we couldn't plant anything or have remaining labor time, try to order
+                if not planted_any:
+                    print("❌ No plants were planted today - analyzing why:")
+                    polygon_id = self._get_next_polygon()
+                    if polygon_id:
+                        polygon_demand = self.state.remaining_demand.loc[polygon_id]
+                        print(f"Next polygon {polygon_id} demand: {polygon_demand.sum():,} plants")
+                        print("Available inventory by species:")
+                        for i in range(1, 11):
+                            available = self.state.available_inventory[i]
+                            demand = polygon_demand[i]
+                            print(f"  Species {i}: {available:,} available, {demand:,} needed")
+                else:
+                    print("✅ Successfully planted plants today!")
+                
+                # Always try to order more (if we have labor time or couldn't plant)
                 if not planted_any or self.state.remaining_labor_hours > 0:
                     self._order_plants_if_needed()
             
@@ -341,27 +359,52 @@ class PolygonStrategy(OptimizationStrategy):
         
         print(f"\nEvaluating planting options for polygon {polygon_id}")
         print(f"Max plants per day: {max_plants_per_day:,}")
+        print(f"Remaining labor hours: {self.state.remaining_labor_hours:.2f}h")
         
         # Check labor time
         travel_time = self.time_matrix.loc[BASE_ID, polygon_id]
         return_time = self.time_matrix.loc[polygon_id, BASE_ID]
         
-        # PRIORITY 1: SCALED OPUNTIA TRIPS (20 min treatment, species 5,6,7,8)
-        opuntia_planted = self._try_scaled_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day)
-        if opuntia_planted:
-            plants_planted = True
-        
-        # PRIORITY 2: SCALED NON-OPUNTIA TRIPS (1 hour treatment, species 1,2,3,4,9,10)
-        if self.state.remaining_labor_hours > 0:
+        # AGGRESSIVE APPROACH: Keep planting until no more labor time or plants
+        trip_count = 0
+        while self.state.remaining_labor_hours > 1.5:  # Need at least 1.5 hours for any meaningful trip
+            trip_planted = False
+            
+            # PRIORITY 1: Multiple SCALED OPUNTIA TRIPS (20 min treatment, species 5,6,7,8)
+            opuntia_planted = self._try_scaled_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day)
+            if opuntia_planted:
+                plants_planted = True
+                trip_planted = True
+                trip_count += 1
+                print(f"Completed trip #{trip_count} (Opuntia scaled)")
+                continue  # Try another trip immediately
+            
+            # PRIORITY 2: SCALED NON-OPUNTIA TRIPS (1 hour treatment, species 1,2,3,4,9,10)
             non_opuntia_planted = self._try_scaled_non_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day)
             if non_opuntia_planted:
                 plants_planted = True
-        
-        # PRIORITY 3: PARTIAL TRIPS (maximize labor utilization)
-        if self.state.remaining_labor_hours > 2.0:  # Need at least 2 hours for a meaningful trip
-            partial_planted = self._try_partial_trip(polygon_id, polygon_demand, travel_time, return_time)
+                trip_planted = True
+                trip_count += 1
+                print(f"Completed trip #{trip_count} (Non-opuntia scaled)")
+                continue  # Try another trip immediately
+            
+            # PRIORITY 3: AGGRESSIVE PARTIAL TRIPS (plant ANY available plants)
+            partial_planted = self._try_aggressive_partial_trip(polygon_id, polygon_demand, travel_time, return_time)
             if partial_planted:
                 plants_planted = True
+                trip_planted = True
+                trip_count += 1
+                print(f"Completed trip #{trip_count} (Partial/aggressive)")
+                continue  # Try another trip immediately
+            
+            # If no trip was possible, break the loop
+            if not trip_planted:
+                print(f"No more viable trips possible with {self.state.remaining_labor_hours:.2f}h remaining")
+                break
+        
+        if plants_planted:
+            print(f"🚛 Total trips completed today: {trip_count}")
+            print(f"Labor hours remaining: {self.state.remaining_labor_hours:.2f}h")
         
         return plants_planted
     
@@ -463,8 +506,8 @@ class PolygonStrategy(OptimizationStrategy):
         
         return True
     
-    def _try_partial_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float) -> bool:
-        """Try to plant available plants in proper proportions (maximize labor utilization)"""
+    def _try_aggressive_partial_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float) -> bool:
+        """AGGRESSIVELY try to plant ANY available plants (minimum 1 plant)"""
         # Collect available plants by treatment type
         available_opuntias = {}
         available_non_opuntias = {}
@@ -480,42 +523,42 @@ class PolygonStrategy(OptimizationStrategy):
                 else:
                     available_non_opuntias[species_id] = plantable
         
-        # Try opuntias first (shorter treatment time)
+        # Try opuntias first (shorter treatment time) - MINIMUM 1 PLANT
         opuntia_planted = False
         if available_opuntias:
             total_opuntias = sum(available_opuntias.values())
-            if total_opuntias >= 40:  # Minimum worthwhile amount
+            if total_opuntias >= 1:  # AGGRESSIVE: Plant even 1 plant!
                 trip_time = travel_time + return_time + 1.0
                 treatment_time = get_treatment_time(5, 1)  # 0.33 hours
                 total_time = trip_time + treatment_time
                 
                 if self.state.remaining_labor_hours >= total_time:
-                    print(f"🌵 PARTIAL OPUNTIA TRIP: {total_opuntias} plants available")
+                    print(f"🌵 AGGRESSIVE OPUNTIA TRIP: {total_opuntias} plants available (ANY AMOUNT)")
                     
                     for species_id, quantity in available_opuntias.items():
                         self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time)
                     
                     self.state.remaining_labor_hours -= total_time
-                    print(f"Partial opuntia trip completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
+                    print(f"Aggressive opuntia trip completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
                     opuntia_planted = True
         
-        # Try non-opuntias if we still have labor time
+        # Try non-opuntias if we still have labor time - MINIMUM 1 PLANT  
         non_opuntia_planted = False
-        if self.state.remaining_labor_hours > 2.0 and available_non_opuntias:
+        if self.state.remaining_labor_hours > 1.5 and available_non_opuntias:
             total_non_opuntias = sum(available_non_opuntias.values())
-            if total_non_opuntias >= 40:  # Minimum worthwhile amount
+            if total_non_opuntias >= 1:  # AGGRESSIVE: Plant even 1 plant!
                 trip_time = travel_time + return_time + 1.0
                 treatment_time = get_treatment_time(1, 1)  # 1 hour
                 total_time = trip_time + treatment_time
                 
                 if self.state.remaining_labor_hours >= total_time:
-                    print(f"🌱 PARTIAL NON-OPUNTIA TRIP: {total_non_opuntias} plants available")
+                    print(f"🌱 AGGRESSIVE NON-OPUNTIA TRIP: {total_non_opuntias} plants available (ANY AMOUNT)")
                     
                     for species_id, quantity in available_non_opuntias.items():
                         self._execute_planting(polygon_id, species_id, quantity, travel_time, treatment_time)
                     
                     self.state.remaining_labor_hours -= total_time
-                    print(f"Partial non-opuntia trip completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
+                    print(f"Aggressive non-opuntia trip completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
                     non_opuntia_planted = True
         
         return opuntia_planted or non_opuntia_planted
