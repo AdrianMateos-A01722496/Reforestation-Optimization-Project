@@ -144,8 +144,11 @@ class PolygonStrategy(OptimizationStrategy):
         
         print(f"Final warehouse inventory: {self.state.get_total_warehouse_inventory():,} plants")
     
-    def _get_next_polygon(self) -> int:
+    def _get_next_polygon(self, exclude_polygons: set = None) -> int:
         """Get the next polygon to plant, prioritizing polygons that need available species"""
+        if exclude_polygons is None:
+            exclude_polygons = set()
+            
         # Get all polygons with remaining demand
         polygon_demand_totals = self.state.remaining_demand.sum(axis=1)
         viable_polygons = polygon_demand_totals[polygon_demand_totals > 0].index.tolist()
@@ -153,8 +156,8 @@ class PolygonStrategy(OptimizationStrategy):
         if not viable_polygons:
             return None
         
-        # Remove warehouse polygon if it appears
-        viable_polygons = [p for p in viable_polygons if p != BASE_ID]
+        # Remove warehouse polygon and excluded polygons
+        viable_polygons = [p for p in viable_polygons if p != BASE_ID and p not in exclude_polygons]
         
         if not viable_polygons:
             return None
@@ -190,10 +193,14 @@ class PolygonStrategy(OptimizationStrategy):
                 print(f"🏆 Selected polygon {selected_polygon} (matches {matching_count} available species)")
                 return selected_polygon
         
-        # Fallback: return polygon with highest total demand
-        max_demand_polygon = polygon_demand_totals.idxmax()
-        print(f"📍 Fallback: Selected polygon {max_demand_polygon} (highest demand: {polygon_demand_totals[max_demand_polygon]:,})")
-        return max_demand_polygon
+        # Fallback: return polygon with highest total demand (excluding failed ones)
+        viable_totals = {p: polygon_demand_totals[p] for p in viable_polygons}
+        if viable_totals:
+            max_demand_polygon = max(viable_totals.keys(), key=lambda p: viable_totals[p])
+            print(f"📍 Fallback: Selected polygon {max_demand_polygon} (highest demand: {viable_totals[max_demand_polygon]:,})")
+            return max_demand_polygon
+        
+        return None
     
     def _calculate_max_plants_per_day(self, polygon_id: int) -> int:
         """Calculate maximum number of plants that can be planted in a day for a given polygon"""
@@ -461,69 +468,102 @@ class PolygonStrategy(OptimizationStrategy):
         return False
     
     def _plant_available_plants(self) -> bool:
-        """Try to plant available plants using treatment-time-aware strategy. Returns True if any plants were planted."""
+        """MULTI-TRIP BEAST: Maximize trips per day using short travel times"""
         plants_planted = False
+        total_trips = 0
+        failed_polygons = set()  # Track polygons that failed to prevent infinite loops
         
-        # Get next polygon to plant
-        polygon_id = self._get_next_polygon()
-        if polygon_id is None:
-            print("No polygons with remaining demand")
-            return False
+        print(f"\n🚀 MULTI-TRIP OPTIMIZATION: Starting with {self.state.remaining_labor_hours:.2f}h")
         
-        # Calculate maximum plants we can plant in this polygon today
-        max_plants_per_day = self._calculate_max_plants_per_day(polygon_id)
-        
-        # Get demand for this polygon
-        polygon_demand = self.state.remaining_demand.loc[polygon_id]
-        
-        print(f"\nEvaluating planting options for polygon {polygon_id}")
-        print(f"Max plants per day: {max_plants_per_day:,}")
-        print(f"Remaining labor hours: {self.state.remaining_labor_hours:.2f}h")
-        
-        # Check labor time
-        travel_time = self.time_matrix.loc[BASE_ID, polygon_id]
-        return_time = self.time_matrix.loc[polygon_id, BASE_ID]
-        
-        # AGGRESSIVE APPROACH: Keep planting until no more labor time or plants
-        trip_count = 0
-        while self.state.remaining_labor_hours > 1.5:  # Need at least 1.5 hours for any meaningful trip
-            trip_planted = False
+        # AGGRESSIVE MULTI-TRIP STRATEGY: Keep going until labor exhausted
+        while self.state.remaining_labor_hours > 1.0:  # Need at least 1h for minimum trip
+            trip_made = False
             
-            # PRIORITY 1: Multiple SCALED OPUNTIA TRIPS (20 min treatment, species 5,6,7,8)
-            opuntia_planted = self._try_scaled_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day)
-            if opuntia_planted:
-                plants_planted = True
-                trip_planted = True
-                trip_count += 1
-                print(f"Completed trip #{trip_count} (Opuntia scaled)")
-                continue  # Try another trip immediately
-            
-            # PRIORITY 2: SCALED NON-OPUNTIA TRIPS (1 hour treatment, species 1,2,3,4,9,10)
-            non_opuntia_planted = self._try_scaled_non_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day)
-            if non_opuntia_planted:
-                plants_planted = True
-                trip_planted = True
-                trip_count += 1
-                print(f"Completed trip #{trip_count} (Non-opuntia scaled)")
-                continue  # Try another trip immediately
-            
-            # PRIORITY 3: AGGRESSIVE PARTIAL TRIPS (plant ANY available plants)
-            partial_planted = self._try_aggressive_partial_trip(polygon_id, polygon_demand, travel_time, return_time)
-            if partial_planted:
-                plants_planted = True
-                trip_planted = True
-                trip_count += 1
-                print(f"Completed trip #{trip_count} (Partial/aggressive)")
-                continue  # Try another trip immediately
-            
-            # If no trip was possible, break the loop
-            if not trip_planted:
-                print(f"No more viable trips possible with {self.state.remaining_labor_hours:.2f}h remaining")
+            # Get next polygon to plant (excluding failed polygons)
+            polygon_id = self._get_next_polygon(exclude_polygons=failed_polygons)
+            if polygon_id is None:
+                print("No polygons with remaining demand (excluding failed polygons)")
                 break
+            
+            # Calculate trip logistics
+            travel_time = self.time_matrix.loc[BASE_ID, polygon_id]
+            return_time = self.time_matrix.loc[polygon_id, BASE_ID]
+            polygon_demand = self.state.remaining_demand.loc[polygon_id]
+            max_plants_per_day = self._calculate_max_plants_per_day(polygon_id)
+            
+            print(f"\n🎯 TRIP ATTEMPT #{total_trips + 1} to Polygon {polygon_id}")
+            print(f"   Travel: {travel_time:.3f}h each way, Labor remaining: {self.state.remaining_labor_hours:.2f}h")
+            
+            # PRIORITY 1: SCALED OPUNTIA TRIPS (maximize truck efficiency)
+            if self._try_scaled_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day):
+                total_trips += 1
+                plants_planted = True
+                trip_made = True
+                print(f"✅ SCALED OPUNTIA TRIP #{total_trips} completed!")
+                # Remove from failed list since it succeeded
+                failed_polygons.discard(polygon_id)
+                continue
+            
+            # PRIORITY 2: SCALED NON-OPUNTIA TRIPS (maximize truck efficiency)
+            if self._try_scaled_non_opuntia_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day):
+                total_trips += 1
+                plants_planted = True
+                trip_made = True
+                print(f"✅ SCALED NON-OPUNTIA TRIP #{total_trips} completed!")
+                failed_polygons.discard(polygon_id)
+                continue
+            
+            # PRIORITY 3: EFFICIENT MIXED TRIPS (plant multiple species efficiently)
+            mixed_trip_result = self._try_efficient_mixed_trip(polygon_id, polygon_demand, travel_time, return_time, max_plants_per_day)
+            if mixed_trip_result:
+                total_trips += 1
+                plants_planted = True
+                trip_made = True
+                print(f"✅ MIXED TRIP #{total_trips} completed!")
+                failed_polygons.discard(polygon_id)
+                continue
+            
+            # PRIORITY 4: SINGLE SPECIES TRIPS (use remaining time efficiently)
+            single_trip_result = self._try_single_species_trip(polygon_id, polygon_demand, travel_time, return_time)
+            if single_trip_result:
+                total_trips += 1
+                plants_planted = True
+                trip_made = True
+                print(f"✅ SINGLE SPECIES TRIP #{total_trips} completed!")
+                failed_polygons.discard(polygon_id)
+                continue
+            
+            # If no trip was possible with this polygon, mark it as failed
+            if not trip_made:
+                print(f"❌ No viable trip to polygon {polygon_id}")
+                failed_polygons.add(polygon_id)
+                
+                # Check if all viable polygons have failed
+                viable_polygons = self.state.remaining_demand.sum(axis=1)
+                viable_polygons = viable_polygons[viable_polygons > 0].index.tolist()
+                viable_polygons = [p for p in viable_polygons if p != BASE_ID]  # Remove warehouse
+                
+                remaining_polygons = set(viable_polygons) - failed_polygons
+                
+                if not remaining_polygons:
+                    print(f"🔴 All viable polygons have failed with current inventory")
+                    print(f"   Failed polygons: {sorted(failed_polygons)}")
+                    print(f"   Available inventory: {[f'{i}:{self.state.available_inventory[i]}' for i in range(1,11) if self.state.available_inventory[i] > 0]}")
+                    break
+                
+                print(f"   Polygon {polygon_id} added to failed list (total failed: {len(failed_polygons)})")
+                continue
         
         if plants_planted:
-            print(f"🚛 Total trips completed today: {trip_count}")
-            print(f"Labor hours remaining: {self.state.remaining_labor_hours:.2f}h")
+            print(f"\n🏆 MULTI-TRIP SUMMARY:")
+            print(f"   🚛 Total trips completed: {total_trips}")
+            print(f"   ⏰ Labor hours remaining: {self.state.remaining_labor_hours:.2f}h")
+            print(f"   📦 Warehouse status: {self.state.get_total_warehouse_inventory():,}/10,000")
+        else:
+            print(f"\n❌ NO TRIPS COMPLETED:")
+            print(f"   Failed polygons: {sorted(failed_polygons) if failed_polygons else 'None'}")
+            print(f"   Labor remaining: {self.state.remaining_labor_hours:.2f}h")
+            print(f"   Available inventory: {[f'{i}:{self.state.available_inventory[i]}' for i in range(1,11) if self.state.available_inventory[i] > 0]}")
         
         return plants_planted
     
@@ -625,8 +665,8 @@ class PolygonStrategy(OptimizationStrategy):
         
         return True
     
-    def _try_aggressive_partial_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float) -> bool:
-        """AGGRESSIVELY try to plant ANY available plants (minimum 1 plant)"""
+    def _try_efficient_mixed_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float, max_plants_per_day: int) -> bool:
+        """Try to plant a mixed trip that plants multiple species efficiently"""
         # Collect available plants by treatment type
         available_opuntias = {}
         available_non_opuntias = {}
@@ -681,6 +721,47 @@ class PolygonStrategy(OptimizationStrategy):
                     non_opuntia_planted = True
         
         return opuntia_planted or non_opuntia_planted
+    
+    def _try_single_species_trip(self, polygon_id: int, polygon_demand, travel_time: float, return_time: float) -> bool:
+        """Try to plant a single species trip that uses remaining time efficiently"""
+        # Find the species with the most available plants that has demand
+        best_species = None
+        max_plantable = 0
+        best_treatment_time = 0
+        
+        for species_id in range(1, 11):
+            available = self.state.available_inventory[species_id]
+            demand = polygon_demand[species_id]
+            plantable = min(available, demand)
+            
+            if plantable > max_plantable:
+                max_plantable = plantable
+                best_species = species_id
+                best_treatment_time = get_treatment_time(species_id, 1)
+        
+        if best_species is None or max_plantable < 1:
+            return False
+        
+        # Calculate trip time
+        trip_time = travel_time + return_time + 1.0  # travel + load/unload
+        total_time = trip_time + best_treatment_time
+        
+        if self.state.remaining_labor_hours < total_time:
+            return False
+        
+        # Determine how many plants to take (up to truck capacity)
+        plants_to_take = min(max_plantable, VAN_CAPACITY)
+        
+        print(f"🚛 SINGLE SPECIES TRIP: {plants_to_take} of species {best_species}")
+        
+        # Execute the trip
+        self._execute_planting(polygon_id, best_species, plants_to_take, travel_time, best_treatment_time)
+        
+        # Update labor hours
+        self.state.remaining_labor_hours -= total_time
+        print(f"Single species trip completed. Remaining labor: {self.state.remaining_labor_hours:.2f}h")
+        
+        return True
     
     def _execute_planting(self, polygon_id: int, species_id: int, quantity: int, travel_time: float, treatment_time: float):
         """Execute the actual planting of a species"""
