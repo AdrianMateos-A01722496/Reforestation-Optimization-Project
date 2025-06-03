@@ -36,7 +36,7 @@ class PolygonStrategy(OptimizationStrategy):
         # Safety measures to prevent infinite loops
         max_days = 1000  # Reasonable upper limit 
         days_without_progress = 0
-        max_days_without_progress = 20  # If no progress for 20 days, something is wrong
+        max_days_without_progress = 30  # Allow more time for initial acclimation (was 20)
         last_demand = self.state.remaining_demand.sum().sum()
         
         while (not self.state.remaining_demand.empty and 
@@ -45,6 +45,7 @@ class PolygonStrategy(OptimizationStrategy):
             
             current_demand = self.state.remaining_demand.sum().sum()
             current_inventory = self.state.get_total_warehouse_inventory()
+            current_available = sum(self.state.available_inventory.values())
             
             # Check for progress
             if current_demand < last_demand:
@@ -56,6 +57,14 @@ class PolygonStrategy(OptimizationStrategy):
                     print(f"\n⚠️  No progress for {max_days_without_progress} days - stopping to avoid infinite loop")
                     print(f"Current demand: {current_demand:,}")
                     print(f"Current inventory: {current_inventory:,}")
+                    print(f"Available for planting: {current_available:,}")
+                    
+                    # Debug acclimation stages
+                    print("Acclimation stages:")
+                    print(f"  Stage 0 (arriving today): {sum(self.state.acclim_stage_0.values()):,}")
+                    print(f"  Stage 1 (1 day old): {sum(self.state.acclim_stage_1.values()):,}")
+                    print(f"  Stage 2 (2 days old): {sum(self.state.acclim_stage_2.values()):,}")
+                    print(f"  Available (3+ days old): {current_available:,}")
                     break
             
             # Report progress regularly
@@ -136,31 +145,55 @@ class PolygonStrategy(OptimizationStrategy):
         print(f"Final warehouse inventory: {self.state.get_total_warehouse_inventory():,} plants")
     
     def _get_next_polygon(self) -> int:
-        """Get the next polygon to reforest based on travel time from P18"""
-        # Get polygons with remaining demand
-        polygons_with_demand = self.state.remaining_demand[
-            self.state.remaining_demand.sum(axis=1) > 0
-        ].index.tolist()
+        """Get the next polygon to plant, prioritizing polygons that need available species"""
+        # Get all polygons with remaining demand
+        polygon_demand_totals = self.state.remaining_demand.sum(axis=1)
+        viable_polygons = polygon_demand_totals[polygon_demand_totals > 0].index.tolist()
         
-        if len(polygons_with_demand) == 0:
+        if not viable_polygons:
             return None
         
-        # Get travel times from P18 to all polygons with demand
-        polygon_times = {}
-        for polygon_id in polygons_with_demand:
-            try:
-                travel_time = self.time_matrix.loc[BASE_ID, polygon_id]
-                polygon_times[polygon_id] = travel_time
-            except KeyError:
-                print(f"Warning: No travel time data for polygon {polygon_id}")
-                continue
+        # Remove warehouse polygon if it appears
+        viable_polygons = [p for p in viable_polygons if p != BASE_ID]
         
-        if not polygon_times:
+        if not viable_polygons:
             return None
         
-        # Return the closest polygon that has demand
-        closest_polygon = min(polygon_times, key=polygon_times.get)
-        return closest_polygon
+        # SMART SELECTION: Prioritize polygons that need species we actually have available
+        available_species = [s for s in range(1, 11) if self.state.available_inventory[s] > 0]
+        
+        if available_species:
+            print(f"🎯 Available species for planting: {available_species}")
+            
+            # Score polygons based on how many available species they need
+            polygon_scores = []
+            for polygon_id in viable_polygons:
+                polygon_demand = self.state.remaining_demand.loc[polygon_id]
+                
+                # Count how many available species this polygon needs
+                matching_species = 0
+                total_matching_demand = 0
+                
+                for species_id in available_species:
+                    if polygon_demand[species_id] > 0:
+                        matching_species += 1
+                        total_matching_demand += polygon_demand[species_id]
+                
+                polygon_scores.append((polygon_id, matching_species, total_matching_demand, polygon_demand_totals[polygon_id]))
+                
+            # Sort by: 1) Most matching species, 2) Highest matching demand, 3) Highest total demand
+            polygon_scores.sort(key=lambda x: (x[1], x[2], x[3]), reverse=True)
+            
+            if polygon_scores:
+                selected_polygon = polygon_scores[0][0]
+                matching_count = polygon_scores[0][1]
+                print(f"🏆 Selected polygon {selected_polygon} (matches {matching_count} available species)")
+                return selected_polygon
+        
+        # Fallback: return polygon with highest total demand
+        max_demand_polygon = polygon_demand_totals.idxmax()
+        print(f"📍 Fallback: Selected polygon {max_demand_polygon} (highest demand: {polygon_demand_totals[max_demand_polygon]:,})")
+        return max_demand_polygon
     
     def _calculate_max_plants_per_day(self, polygon_id: int) -> int:
         """Calculate maximum number of plants that can be planted in a day for a given polygon"""
@@ -184,162 +217,248 @@ class PolygonStrategy(OptimizationStrategy):
         return max_plants
     
     def _order_plants_if_needed(self) -> bool:
-        """Order plants if needed and there's warehouse space"""
+        """Hybrid ordering strategy: Fill warehouse initially, then just-in-time replacement"""
         # Check available warehouse space
         current_inventory = self.state.get_total_warehouse_inventory()
         available_space = WAREHOUSE_CAPACITY - current_inventory
         
-        # Account for pending arrivals
-        tomorrow_arrivals = sum(
-            sum(quantity for _, quantity in order.species_id_quantity)
-            for order in self.state.orders
-            if order.arrival_day == self.state.current_day + 1
-        )
+        # Account for pending arrivals (plants arriving tomorrow and later)
+        pending_arrivals = 0
+        for order in self.state.orders:
+            if order.arrival_day > self.state.current_day:
+                pending_arrivals += order.amount_of_plants
         
-        effective_space = available_space - tomorrow_arrivals
+        effective_space = available_space - pending_arrivals
         
-        if effective_space < VAN_CAPACITY:  # Need at least one van's worth of space
-            print(f"Not enough warehouse space: {effective_space} available")
+        if effective_space <= 0:
+            print(f"⚠️  No warehouse space available. Current: {current_inventory}, Pending: {pending_arrivals}, Capacity: {WAREHOUSE_CAPACITY}")
             return False
         
-        # Get next polygon to understand what species we need
-        polygon_id = self._get_next_polygon()
-        if polygon_id is None:
-            print("No polygons with remaining demand")
-            return False
+        print(f"📦 Warehouse status: {current_inventory:,}/{WAREHOUSE_CAPACITY:,} used, {effective_space:,} available space")
         
-        # Get demand for next polygon
-        polygon_demand = self.state.remaining_demand.loc[polygon_id]
+        # PHASE 1: INITIAL AGGRESSIVE STOCKING (First 3 days)
+        if self.state.current_day <= 3:
+            return self._initial_aggressive_ordering(effective_space)
         
-        # Determine what to order based on current inventory levels and next polygon needs
-        order_created = False
+        # PHASE 2: JUST-IN-TIME REPLACEMENT ORDERING
+        else:
+            return self._just_in_time_ordering(effective_space)
+    
+    def _initial_aggressive_ordering(self, effective_space: int) -> bool:
+        """Phase 1: Fill warehouse to capacity with smart proportions"""
+        print(f"📋 PHASE 1: INITIAL AGGRESSIVE STOCKING (Day {self.state.current_day})")
         
-        # Simple provider rotation: cycle through providers based on day
+        # Calculate total demand across all species to determine proportions
+        total_demand_by_species = {}
+        for species_id in range(1, 11):
+            total_demand_by_species[species_id] = self.state.remaining_demand[species_id].sum()
+        
+        total_overall_demand = sum(total_demand_by_species.values())
+        
+        # Calculate proportional ordering amounts based on overall demand
+        order_amounts = {}
+        max_order_size = min(effective_space, MAX_PLANTS_ORDER_PER_PROVIDER_PER_DAY)
+        
+        for species_id in range(1, 11):
+            if total_overall_demand > 0:
+                proportion = total_demand_by_species[species_id] / total_overall_demand
+                order_amounts[species_id] = int(max_order_size * proportion)
+            else:
+                order_amounts[species_id] = 0
+        
+        print(f"🎯 Proportional ordering for {max_order_size:,} plants:")
+        for species_id, amount in order_amounts.items():
+            if amount > 0:
+                print(f"  Species {species_id}: {amount:,} plants ({amount/max_order_size*100:.1f}%)")
+        
+        # Select provider using rotation
         providers = ['laguna_seca', 'venado', 'moctezuma']
         primary_provider = providers[self.state.current_day % 3]
         
-        # Try providers in rotation order, starting with primary
+        # Try each provider in rotation order
         provider_order = [primary_provider] + [p for p in providers if p != primary_provider]
         
         for provider in provider_order:
-            if order_created:
-                break
-                
-            # Get species this provider should supply (from OPTIMAL_PROVIDER_ALLOCATION)
-            available_species = OPTIMAL_PROVIDER_ALLOCATION.get(provider, [])
+            # Get species this provider should supply
+            provider_species = OPTIMAL_PROVIDER_ALLOCATION.get(provider, [])
+            
+            # Create order for species this provider supplies
             order_quantities = []
             
-            # Prioritize species needed for the next polygon
-            species_priority = []
+            for species_id in provider_species:
+                amount = order_amounts.get(species_id, 0)
+                if amount > 0:
+                    order_quantities.append((species_id, amount))
+                    print(f"📝 Ordering {amount:,} of species {species_id} from {provider}")
             
-            # First, add species needed for next polygon that this provider supplies
-            for species_id in available_species:
-                polygon_need = polygon_demand[species_id] if polygon_demand[species_id] > 0 else 0
-                available = self.state.available_inventory[species_id]
-                total_demand = self.state.remaining_demand[species_id].sum()
-                
-                if polygon_need > 0 and total_demand > 0:
-                    species_priority.append((species_id, polygon_need, total_demand))
-                    print(f"Priority species {species_id}: polygon needs {polygon_need}, we have {available}, total demand {total_demand}")
-            
-            # Then add other species this provider supplies that we're low on
-            for species_id in available_species:
-                if species_id not in [s[0] for s in species_priority]:
-                    available = self.state.available_inventory[species_id]
-                    total_demand = self.state.remaining_demand[species_id].sum()
-                    
-                    if total_demand > 0 and available < VAN_CAPACITY * 2:
-                        species_priority.append((species_id, 0, total_demand))
-            
-            # Sort by polygon need first, then total demand
-            species_priority.sort(key=lambda x: (x[1], x[2]), reverse=True)
-            
-            # Create order quantities - be flexible about order sizes, especially for remaining demand
-            total_remaining_demand = self.state.remaining_demand.sum().sum()
-            is_final_phase = total_remaining_demand < VAN_CAPACITY * 3  # Less than 3 van loads remaining
-            
-            for species_id, polygon_need, total_demand in species_priority:
-                if effective_space < 50:  # Need at least some space
-                    break
-                
-                # Calculate order quantity - prioritize completing the project
-                current_available = self.state.available_inventory[species_id]
-                
-                if is_final_phase:
-                    # In final phase, order exactly what we need
-                    needed = total_demand - current_available
-                    if needed > 0:
-                        order_qty = min(needed, effective_space)
-                        min_order_size = 1  # Allow any order size in final phase
-                    else:
-                        continue  # Skip if we already have enough
-                elif total_demand < VAN_CAPACITY * 2:
-                    # If total demand is small, order exactly what we need
-                    order_qty = min(total_demand, effective_space)
-                    min_order_size = 50
-                else:
-                    # Otherwise order in van load increments
-                    order_qty = min(
-                        VAN_CAPACITY * 2,  # Prefer 2 van loads at a time
-                        total_demand,
-                        effective_space
-                    )
-                    min_order_size = VAN_CAPACITY // 2  # Normal minimum
-                
-                if order_qty >= min_order_size:
-                    order_quantities.append((species_id, order_qty))
-                    effective_space -= order_qty
-                    if is_final_phase:
-                        print(f"🔥 FINAL PHASE: Ordering {order_qty:,} of species {species_id} from {provider} (exactly what we need)")
-                    else:
-                        print(f"Planning to order {order_qty:,} of species {species_id} from {provider} (polygon need: {polygon_need}, total demand: {total_demand:,})")
-            
-            # Create order if we have quantities to order
+            # Create order if we have quantities
             if order_quantities:
                 total_plants = sum(qty for _, qty in order_quantities)
                 
-                # Don't exceed daily order limit
-                if total_plants <= MAX_PLANTS_ORDER_PER_PROVIDER_PER_DAY:
-                    order = Order(
-                        order_day=self.state.current_day,
-                        arrival_day=self.state.current_day + 1,
-                        amount_of_plants=total_plants,
-                        provider=provider,
-                        species_id_quantity=order_quantities,
-                        cost=0
-                    )
+                order = Order(
+                    order_day=self.state.current_day,
+                    arrival_day=self.state.current_day + 1,
+                    amount_of_plants=total_plants,
+                    provider=provider,
+                    species_id_quantity=order_quantities,
+                    cost=0
+                )
+                
+                # Calculate order cost
+                order.cost = calculate_order_cost(order)
+                
+                if order.cost > 0:
+                    # Add to orders and update cost
+                    self.state.orders.append(order)
+                    self.state.total_cost += order.cost
                     
-                    # Calculate order cost
-                    order.cost = calculate_order_cost(order)
+                    # Update warehouse inventory for next day (stage 0)
+                    for species_id, quantity in order_quantities:
+                        self.state.acclim_stage_0[species_id] += quantity
                     
-                    if order.cost > 0:  # Only proceed if cost calculation was successful
-                        # Add to orders list and update total cost
-                        self.state.orders.append(order)
-                        self.state.total_cost += order.cost
-                        
-                        # Update warehouse inventory for next day (stage 0)
-                        for species_id, quantity in order_quantities:
-                            self.state.acclim_stage_0[species_id] += quantity
-                        
-                        print(f"Ordered {total_plants:,} plants from {provider} (primary provider for day {self.state.current_day})")
-                        print(f"Species: {', '.join(f'{s}:{q:,}' for s, q in order_quantities)}")
-                        print(f"Order cost: ${order.cost:,.2f}")
-                        
-                        order_created = True
-                    else:
-                        print(f"Failed to calculate cost for order from {provider}")
+                    print(f"✅ BULK ORDER: {total_plants:,} plants from {provider} for ${order.cost:,.2f}")
+                    print(f"   Species breakdown: {', '.join(f'{s}:{q:,}' for s, q in order_quantities)}")
+                    return True
+                else:
+                    print(f"❌ Failed to calculate cost for order from {provider}")
         
-        if not order_created:
-            print(f"No orders were created this iteration (primary provider: {primary_provider})")
-            # Debug: print current inventory levels
-            print("Current available inventory:")
-            for i in range(1, 11):
-                available = self.state.available_inventory[i]
-                total_demand = self.state.remaining_demand[i].sum()
-                polygon_need = polygon_demand[i] if polygon_id else 0
-                print(f"  Species {i}: {available:,} available, {total_demand:,} total demand, {polygon_need:,} needed in polygon {polygon_id}")
+        print("❌ No bulk orders could be created")
+        return False
+    
+    def _just_in_time_ordering(self, effective_space: int) -> bool:
+        """Phase 2: Just-in-time replacement ordering"""
+        print(f"📋 PHASE 2: JUST-IN-TIME REPLACEMENT ORDERING")
         
-        return order_created
+        # Calculate what we'll need for tomorrow's planting + small buffer
+        species_to_order = {}
+        total_plants_needed = 0
+        
+        # Look at next polygon to plant and estimate daily consumption
+        polygon_id = self._get_next_polygon()
+        if polygon_id:
+            max_daily_consumption = self._calculate_max_plants_per_day(polygon_id)
+            # Conservative estimate: use 30% of max daily capacity as expected consumption
+            expected_daily_consumption = max(200, max_daily_consumption // 3)
+        else:
+            expected_daily_consumption = 500  # Default fallback
+        
+        for species_id in range(1, 11):
+            # Get current total inventory (all stages)
+            current_species_inventory = (
+                self.state.available_inventory[species_id] +
+                self.state.acclim_stage_0[species_id] +
+                self.state.acclim_stage_1[species_id] +
+                self.state.acclim_stage_2[species_id]
+            )
+            
+            # Get total remaining demand
+            total_species_demand = self.state.remaining_demand[species_id].sum()
+            
+            if total_species_demand == 0:
+                continue
+            
+            # Calculate species proportion of total demand
+            total_demand = self.state.remaining_demand.sum().sum()
+            if total_demand > 0:
+                species_proportion = total_species_demand / total_demand
+                expected_species_consumption = int(expected_daily_consumption * species_proportion)
+                
+                # Order if inventory will be low (less than 2 days of consumption)
+                safety_threshold = max(50, expected_species_consumption * 2)
+                
+                if current_species_inventory < safety_threshold:
+                    # Order enough for ~3 days of consumption
+                    order_amount = max(expected_species_consumption * 3, 100)
+                    # Don't order more than remaining demand
+                    order_amount = min(order_amount, total_species_demand)
+                    
+                    species_to_order[species_id] = order_amount
+                    total_plants_needed += order_amount
+                    print(f"🔄 Species {species_id}: Need {order_amount:,} (have: {current_species_inventory:,}, daily consumption: ~{expected_species_consumption:,})")
+                else:
+                    print(f"✅ Species {species_id}: Sufficient inventory ({current_species_inventory:,} have, threshold: {safety_threshold:,})")
+        
+        if not species_to_order:
+            print("✅ All species have sufficient inventory for near-term planting!")
+            return False
+        
+        # Limit order to available warehouse space
+        max_order_size = min(effective_space, total_plants_needed, MAX_PLANTS_ORDER_PER_PROVIDER_PER_DAY)
+        
+        if max_order_size <= 0:
+            print(f"⚠️  Cannot order: warehouse space too limited ({effective_space:,} available)")
+            return False
+        
+        print(f"🎯 Just-in-time order needed: {total_plants_needed:,}, Max order size: {max_order_size:,}")
+        
+        # Select provider using rotation
+        providers = ['laguna_seca', 'venado', 'moctezuma']
+        primary_provider = providers[self.state.current_day % 3]
+        
+        # Try each provider in rotation order
+        provider_order = [primary_provider] + [p for p in providers if p != primary_provider]
+        
+        for provider in provider_order:
+            # Get species this provider should supply
+            provider_species = OPTIMAL_PROVIDER_ALLOCATION.get(provider, [])
+            
+            # Find species we need that this provider can supply
+            order_quantities = []
+            remaining_order_space = max_order_size
+            
+            # Prioritize species we need most urgently
+            provider_needs = []
+            for species_id in provider_species:
+                if species_id in species_to_order and remaining_order_space > 0:
+                    needed = min(species_to_order[species_id], remaining_order_space)
+                    if needed > 0:
+                        provider_needs.append((species_id, needed))
+            
+            # Sort by need (descending) 
+            provider_needs.sort(key=lambda x: x[1], reverse=True)
+            
+            for species_id, needed in provider_needs:
+                if remaining_order_space <= 0:
+                    break
+                    
+                order_qty = min(needed, remaining_order_space)
+                order_quantities.append((species_id, order_qty))
+                remaining_order_space -= order_qty
+                print(f"📝 JIT ordering {order_qty:,} of species {species_id} from {provider}")
+            
+            # Create order if we have quantities
+            if order_quantities:
+                total_plants = sum(qty for _, qty in order_quantities)
+                
+                order = Order(
+                    order_day=self.state.current_day,
+                    arrival_day=self.state.current_day + 1,
+                    amount_of_plants=total_plants,
+                    provider=provider,
+                    species_id_quantity=order_quantities,
+                    cost=0
+                )
+                
+                # Calculate order cost
+                order.cost = calculate_order_cost(order)
+                
+                if order.cost > 0:
+                    # Add to orders and update cost
+                    self.state.orders.append(order)
+                    self.state.total_cost += order.cost
+                    
+                    # Update warehouse inventory for next day (stage 0)
+                    for species_id, quantity in order_quantities:
+                        self.state.acclim_stage_0[species_id] += quantity
+                    
+                    print(f"✅ JIT ORDER: {total_plants:,} plants from {provider} for ${order.cost:,.2f}")
+                    print(f"   Species breakdown: {', '.join(f'{s}:{q:,}' for s, q in order_quantities)}")
+                    return True
+                else:
+                    print(f"❌ Failed to calculate cost for order from {provider}")
+        
+        print("❌ No JIT orders could be created")
+        return False
     
     def _plant_available_plants(self) -> bool:
         """Try to plant available plants using treatment-time-aware strategy. Returns True if any plants were planted."""
