@@ -135,24 +135,3 @@ SPECIES_PROPORTIONS = {
     10: 21   # 4.01%
 }
 ```
-
-## Current Challenges
-
-The `PolygonStrategy` is experiencing issues:
-
-1. Getting stuck ordering only Species 2 from 'laguna_seca'
-2. Not planting available plants
-3. Not making progress in reducing demand
-
-Key areas needing attention:
-
-1. Ordering logic to maintain balanced species mix
-2. Planting logic to utilize available inventory
-3. Progress tracking and optimization
-
-## Next Steps
-
-1. Debug ordering logic to ensure balanced species orders
-2. Fix planting logic to effectively use available plants
-3. Implement better progress tracking
-4. Optimize the strategy for cost efficiency
