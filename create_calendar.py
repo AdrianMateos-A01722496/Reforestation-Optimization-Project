@@ -303,6 +303,98 @@ def create_interactive_calendar(json_file="reforestation_daily_data.json",
             border-radius: 4px;
         }}
         
+        /* Species Legend Styles */
+        .species-legend-toggle {{
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 999;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 12px 16px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+        }}
+        
+        .species-legend-toggle:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+        }}
+        
+        .species-legend-panel {{
+            position: fixed;
+            top: 70px;
+            left: 20px;
+            z-index: 998;
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            max-width: 300px;
+            display: none;
+            border: 1px solid rgba(0,0,0,0.1);
+        }}
+        
+        .species-legend-panel.show {{
+            display: block;
+        }}
+        
+        .species-legend-title {{
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 15px;
+            text-align: center;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 8px;
+        }}
+        
+        .species-legend-list {{
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }}
+        
+        .species-legend-item {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            transition: background-color 0.2s ease;
+        }}
+        
+        .species-legend-item:hover {{
+            background: #e9ecef;
+        }}
+        
+        .species-number {{
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: bold;
+            flex-shrink: 0;
+        }}
+        
+        .species-name {{
+            font-size: 13px;
+            color: #333;
+            font-weight: 500;
+            line-height: 1.3;
+        }}
+        
         @media (max-width: 768px) {{
             .calendar-grid {{
                 grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
@@ -316,10 +408,80 @@ def create_interactive_calendar(json_file="reforestation_daily_data.json",
             .summary-cards {{
                 grid-template-columns: 1fr;
             }}
+            
+            .species-legend-toggle {{
+                padding: 10px 12px;
+                font-size: 12px;
+            }}
+            
+            .species-legend-panel {{
+                max-width: 250px;
+                padding: 15px;
+            }}
+            
+            .species-legend-title {{
+                font-size: 14px;
+            }}
+            
+            .species-name {{
+                font-size: 12px;
+            }}
         }}
     </style>
 </head>
 <body>
+    <!-- Species Legend Toggle Button -->
+    <button class="species-legend-toggle" onclick="toggleSpeciesLegend()">
+        🌿 Species Guide
+    </button>
+    
+    <!-- Species Legend Panel -->
+    <div class="species-legend-panel" id="speciesLegendPanel">
+        <div class="species-legend-title">Plant Species Reference</div>
+        <div class="species-legend-list">
+            <div class="species-legend-item">
+                <div class="species-number">1</div>
+                <div class="species-name">Agave lechuguilla</div>
+            </div>
+            <div class="species-legend-item">
+                <div class="species-number">2</div>
+                <div class="species-name">Agave salmiana</div>
+            </div>
+            <div class="species-legend-item">
+                <div class="species-number">3</div>
+                <div class="species-name">Agave scabra</div>
+            </div>
+            <div class="species-legend-item">
+                <div class="species-number">4</div>
+                <div class="species-name">Agave striata</div>
+            </div>
+            <div class="species-legend-item">
+                <div class="species-number">5</div>
+                <div class="species-name">Opuntia cantabrigiensis</div>
+            </div>
+            <div class="species-legend-item">
+                <div class="species-number">6</div>
+                <div class="species-name">Opuntia engelmani</div>
+            </div>
+            <div class="species-legend-item">
+                <div class="species-number">7</div>
+                <div class="species-name">Opuntia robusta</div>
+            </div>
+            <div class="species-legend-item">
+                <div class="species-number">8</div>
+                <div class="species-name">Opuntia streptacanta</div>
+            </div>
+            <div class="species-legend-item">
+                <div class="species-number">9</div>
+                <div class="species-name">Prosopis laevigata</div>
+            </div>
+            <div class="species-legend-item">
+                <div class="species-number">10</div>
+                <div class="species-name">Yucca filifera</div>
+            </div>
+        </div>
+    </div>
+
     <div class="header">
         <h1>🌳 Reforestation Project Timeline</h1>
         <div class="subtitle">Interactive Daily Calendar - Click any day to see details</div>
@@ -746,6 +908,22 @@ def create_interactive_calendar(json_file="reforestation_daily_data.json",
             modalBody.innerHTML = modalContent;
             modal.style.display = 'block';
         }}
+        
+        // Species Legend Toggle Function
+        function toggleSpeciesLegend() {{
+            const panel = document.getElementById('speciesLegendPanel');
+            panel.classList.toggle('show');
+        }}
+        
+        // Close species legend when clicking outside
+        document.addEventListener('click', function(event) {{
+            const panel = document.getElementById('speciesLegendPanel');
+            const toggle = document.querySelector('.species-legend-toggle');
+            
+            if (!panel.contains(event.target) && !toggle.contains(event.target)) {{
+                panel.classList.remove('show');
+            }}
+        }});
         
         // Modal controls
         document.querySelector('.close').onclick = function() {{

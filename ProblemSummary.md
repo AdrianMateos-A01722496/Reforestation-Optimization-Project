@@ -88,7 +88,7 @@ Output processing:
 - `save_state_data()`: Detailed daily log
 - `generate_summary_report()`: Overall results
 
-## Key Learnings
+## Key Insights
 
 ### Provider Specialization
 

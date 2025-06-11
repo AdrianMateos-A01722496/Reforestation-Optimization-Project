@@ -7,6 +7,7 @@ This project addresses a complex reforestation optimization challenge involving 
 ### Performance Results
 
 **Latest optimization run achieved remarkable success:**
+
 - **Project Completion**: 100% - All demand satisfied successfully
 - **Total Cost**: $4,206,338.44
 - **Project Duration**: 170 days
@@ -25,13 +26,15 @@ This project addresses a complex reforestation optimization challenge involving 
 ### Key Challenge Features
 
 #### Supply Chain Constraints
+
 - **Warehouse capacity**: 10,000 plants maximum.
 - **Three suppliers**: Moctezuma, Venado, and Laguna Seca.
 - **Order limits**: Maximum $8,000 plants per order, one order per day.
 - **Plant acclimation**: 3-day minimum acclimation period before planting.
 - **Transportation cost**: $0.5625 per plant from supplier to warehouse.
 
-#### Operational Constraints  
+#### Operational Constraints
+
 - **Labor hours**: 6 hours maximum per day
 - **Weekend restrictions**: No planting on weekends (orders still allowed)
 - **Vehicle capacity**: Single van with 524 plant capacity (exactly 1 hectare worth)
@@ -39,6 +42,7 @@ This project addresses a complex reforestation optimization challenge involving 
 - **Planting cost**: $20 per plant regardless of species
 
 #### Species-Specific Requirements
+
 - **Proportional demand**: Same species ratios across all polygons
 - **Provider specialization**: Each supplier offers different species at different costs
 - **Treatment variation**: Opuntia species (5, 6, 7, 8) require less pre-planting treatment
@@ -48,7 +52,9 @@ This project addresses a complex reforestation optimization challenge involving 
 ### Core Files
 
 #### 1. `main.py` (Entry Point)
+
 The main execution script that:
+
 - Loads demand data from `data/encoded_demand.csv`
 - Loads travel time matrix from `data/tiempos.csv`
 - Initializes the supply chain state and optimization strategy
@@ -57,9 +63,11 @@ The main execution script that:
 - Saves detailed state data for analysis
 
 #### 2. `optimization_framework.py` (Core Classes)
+
 Defines the fundamental data structures and base classes:
 
 **Key Classes:**
+
 - `Order`: Represents plant orders with supplier, species, quantities, and costs
 - `PlantingActivity`: Records planting events with location, species, and timing
 - `TransportationActivity`: Tracks vehicle movements and logistics
@@ -68,9 +76,11 @@ Defines the fundamental data structures and base classes:
 - `OptimizationStrategy`: Abstract base class for optimization algorithms
 
 #### 3. `polygon_strategy.py` (Current Algorithm) - **RECENTLY OPTIMIZED**
+
 Implements the primary optimization strategy with major improvements:
 
 **Core Methods:**
+
 - `solve()`: Main optimization loop with safety limits and progress tracking
 - `_get_next_polygon()`: Selects next polygon based on travel time from base
 - `_calculate_max_plants_per_day()`: Calculates daily planting capacity per polygon
@@ -78,6 +88,7 @@ Implements the primary optimization strategy with major improvements:
 - `_plant_available_plants()`: **IMPROVED** - Handles planting operations and logistics
 
 **Features:**
+
 - **Provider rotation system**: Cycles through all suppliers systematically
 - **Dynamic order sizing**: Based on demand and inventory levels with intelligent priority
 - **Progress tracking**: Comprehensive monitoring with infinite loop prevention
@@ -85,20 +96,23 @@ Implements the primary optimization strategy with major improvements:
 - **Enhanced debugging**: Detailed output for tracking inventory, demands, and decisions
 
 #### 4. `utils.py` (Constants and Utilities) - **CORRECTED MAPPINGS**
+
 Contains all system constants and helper functions:
 
 **Constants:**
+
 - `VAN_CAPACITY = 524` (plants per trip)
 - `WAREHOUSE_CAPACITY = 10000` (maximum storage)
 - `LABOR_TIME = 6.0` (hours per day)
 - `PLANTATION_COST_PER_PLANT = 20` (cost per plant)
 
 **FIXED Provider-Species Mapping:**
+
 ```python
 PROVIDER_SPECIES = {
     "moctezuma": [3, 4, 5, 7, 9, 10] , 
     "venado": [4, 5, 6, 7, 8],
-    "laguna_seca": [1, 2, 3, 6, 7]         
+    "laguna_seca": [1, 2, 3, 6, 7]       
 }
 
 PROVIDER_COSTS = {
@@ -109,6 +123,7 @@ PROVIDER_COSTS = {
 ```
 
 **Species Proportions per Hectare:**
+
 ```python
 SPECIES_PROPORTIONS = {
     1: 33,   # 6.30%
@@ -125,25 +140,31 @@ SPECIES_PROPORTIONS = {
 ```
 
 #### 5. `daily_data_collector.py` (Data Collection)
+
 Collects and structures daily operational data for analysis and reporting:
+
 - `collect_day_data()`: Captures comprehensive daily metrics
 - `save_daily_data()`: Exports to JSON format for calendar generation
 
 ### Analysis and Visualization Files
 
 #### 6. `create_calendar.py`
+
 Generates interactive HTML calendar visualization showing daily activities, costs, and progress.
 
 #### 7. `run_with_data_collection.py`
+
 Extended main script that includes comprehensive data collection during optimization runs.
 
 ### Data Files
 
 #### Input Data
+
 - **`data/encoded_demand.csv`**: 31x10 matrix defining plant demand for each species in each polygon
 - **`data/tiempos.csv`**: 31x31 travel time matrix between all polygons
 
 #### Output Data
+
 - **`reforestation_daily_data.json`**: Complete daily operational data
 - **`state_data.json`**: Final state with all activities and costs
 - **`detailed_state_log.csv`**: Tabular daily metrics for analysis
@@ -152,11 +173,13 @@ Extended main script that includes comprehensive data collection during optimiza
 ## Installation and Setup
 
 ### Requirements
+
 ```bash
 pip install -r requirements.txt
 ```
 
 **Dependencies:**
+
 - `pandas==2.2.1` - Data manipulation and analysis
 - `numpy==1.26.4` - Numerical computations
 - `plotly==5.19.0` - Interactive visualizations
@@ -164,22 +187,26 @@ pip install -r requirements.txt
 ### Quick Start
 
 1. **Clone the repository:**
+
 ```bash
 git clone <repository-url>
 cd RetoOpti
 ```
 
 2. **Install dependencies:**
+
 ```bash
 pip install -r requirements.txt
 ```
 
 3. **Run the optimization:**
+
 ```bash
 python3 main.py
 ```
 
 4. **View results:**
+
 - Check console output for optimization progress and breakthroughs
 - Open `reforestation_calendar.html` in a browser for interactive visualization
 - Analyze `detailed_state_log.csv` for daily metrics and improvements
@@ -191,14 +218,17 @@ python3 main.py
 The current implementation uses a polygon-focused approach with breakthrough optimizations:
 
 #### Systematic Provider Rotation**
+
 Cycles through suppliers daily to ensure balanced utilization:
+
 - **Day % 3 == 0**: laguna_seca
-- **Day % 3 == 1**: venado  
+- **Day % 3 == 1**: venado
 - **Day % 3 == 2**: moctezuma
 
 This ensures all providers are used and all species can be obtained.
 
 #### **Smart Order Management**
+
 - Orders plants based on next polygon needs and current inventory
 - Rotates through providers to access all species
 - Intelligent priority based on current demand and inventory gaps
@@ -206,6 +236,7 @@ This ensures all providers are used and all species can be obtained.
 - Provider-species mapping ensures orders are actually possible
 
 #### **Flexible Planting Operations**
+
 - Calculates daily planting capacity based on travel times
 - Aggressive planting logic for better completion rates
 - Plants available species when inventory and demand align
@@ -213,6 +244,7 @@ This ensures all providers are used and all species can be obtained.
 - Handling of proportional species requirements
 
 #### **Comprehensive Progress Tracking**
+
 - Real-time monitoring of inventory, demand, and daily decisions
 - Infinite loop prevention with safety limits
 - Detailed logging for debugging and optimization
@@ -221,7 +253,9 @@ This ensures all providers are used and all species can be obtained.
 ### Key Optimizations
 
 #### Warehouse Management**
+
 Maintains optimal species distribution for the warehouse at maximum capacity:
+
 ```python
 WAREHOUSE_PROPORTIONS = {
     1: 630,   2: 2996,  3: 630,   4: 630,   5: 744,
@@ -233,15 +267,15 @@ WAREHOUSE_PROPORTIONS = {
 
 **Current optimization achieves complete success:**
 
-| Metric | Result |
-|--------|--------|
-| **Project Completion** | **100% - All demand satisfied** |
-| **Total Cost** | **$4,206,338.44** |
-| **Project Duration** | **170 days** |
-| **Provider Usage** | **All 3 providers utilized** |
-| **Species Coverage** | **All 10 species ordered successfully** |
-| **Algorithm Status** | **Stable execution - no infinite loops** |
-| **Final Inventory** | **Over-ordered 1,459 plants** |
+| Metric                       | Result                                         |
+| ---------------------------- | ---------------------------------------------- |
+| **Project Completion** | **100% - All demand satisfied**          |
+| **Total Cost**         | **$4,206,338.44**                        |
+| **Project Duration**   | **170 days**                             |
+| **Provider Usage**     | **All 3 providers utilized**             |
+| **Species Coverage**   | **All 10 species ordered successfully**  |
+| **Algorithm Status**   | **Stable execution - no infinite loops** |
+| **Final Inventory**    | **Over-ordered 1,459 plants**            |
 
 ### Enhanced Features
 
@@ -254,23 +288,21 @@ WAREHOUSE_PROPORTIONS = {
 ## Usage Examples
 
 ### Basic Optimization Run
+
 ```bash
 python3 main.py
 ```
 
 ### With Data Collection
+
 ```bash
 python3 run_with_data_collection.py
 ```
 
-### Interactive Development
-```bash
-jupyter notebook demo.ipynb
-```
-
-## Output Analysis
+### Output Analysis
 
 ### Key Metrics
+
 - **Total Cost**: Sum of plant, transportation, and planting costs
 - **Project Duration**: Days needed to complete all planting
 - **Resource Utilization**: Warehouse, labor, and vehicle efficiency
@@ -278,6 +310,7 @@ jupyter notebook demo.ipynb
 - **Demand Reduction**: Progress tracking showing improvement over time
 
 ### Visualization Features
+
 - **Interactive Calendar**: Daily activities and progress
 - **Cost Breakdown**: Detailed expense analysis
 - **Progress Tracking**: Demand reduction over time
@@ -289,12 +322,14 @@ jupyter notebook demo.ipynb
 ### **Future Enhancements**
 
 #### Priority Areas
+
 1. **Cost Optimization**: Fine-tune provider selection and order timing
 2. **Advanced Scheduling**: Optimize planting sequences across polygons
 3. **Dynamic Provider Selection**: Real-time cost optimization based on current inventory needs
 4. **Constraint Handling**: Better weekend and labor hour management
 
 #### Potential Improvements
+
 - Machine learning-based polygon prioritization
 - Advanced inventory management strategies for proportional planting
 - Multi-objective optimization (cost vs. time vs. completion rate)
