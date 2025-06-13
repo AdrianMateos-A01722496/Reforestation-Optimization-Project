@@ -208,13 +208,13 @@ python3 main.py
 4. **Run with data collection to save daily data in json file:**
 
 ```bash
-run_with_data_collection.py
+python3 run_with_data_collection.py
 ```
 
 5. **Generate interactive calendar from json file:**
 
 ```bash
-create_calendar.py
+python3 create_calendar.py
 ```
 
 6. **View results:**
