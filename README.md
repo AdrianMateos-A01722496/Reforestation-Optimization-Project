@@ -190,7 +190,7 @@ pip install -r requirements.txt
 
 ```bash
 git clone <repository-url>
-cd RetoOpti
+cd Reforestation-Optimization-Project
 ```
 
 2. **Install dependencies:**
@@ -205,11 +205,23 @@ pip install -r requirements.txt
 python3 main.py
 ```
 
-4. **View results:**
+4. **Run with data collection to save daily data in json file:**
+
+```bash
+run_with_data_collection.py
+```
+
+5. **Generate interactive calendar from json file:**
+
+```bash
+create_calendar.py
+```
+
+6. **View results:**
 
 - Check console output for optimization progress and breakthroughs
 - Open `reforestation_calendar.html` in a browser for interactive visualization
-- Analyze `detailed_state_log.csv` for daily metrics and improvements
+- Analyze `reforestation_daily_data.json` for daily metrics and improvements
 
 ## Algorithm Overview
 
