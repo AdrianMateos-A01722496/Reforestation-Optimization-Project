@@ -191,7 +191,7 @@ class MathematicalOptimizationModel:
         # Constraint 2: Plant arrivals & start of acclimatization
         for e in self.E:
             for t in self.T:
-                if t >= self.t_entrega_vivero:
+                if t > self.t_entrega_vivero:
                     arrival_sum = pl.lpSum([self.X[e, v, t - self.t_entrega_vivero] 
                                           for v in self.V])
                     self.model += (
@@ -208,7 +208,7 @@ class MathematicalOptimizationModel:
         for e in self.E:
             for d in [1, 2]:
                 for t in self.T:
-                    if t >= 1:
+                    if t > 1:
                         self.model += (
                             self.InvAclim[e, d, t] == self.InvAclim[e, d-1, t-1],
                             f"AcclimatizationFlow_{e}_{d}_{t}"
@@ -222,23 +222,21 @@ class MathematicalOptimizationModel:
         # Constraint 4: Available inventory balance
         for e in self.E:
             for t in self.T:
-                if t >= 1:
-                    if t == 1:
-                        prev_available = 0
-                        prev_completed = 0
-                    else:
-                        prev_available = self.InvDisp[e, t-1]
-                        prev_completed = self.InvAclim[e, 2, t-1]
-                    
+                if t == 1:
+                    # For day 1, no previous inventory
+                    shipments = pl.lpSum([self.S[e, p, t] for p in self.P_siembra])
+                    self.model += (
+                        self.InvDisp[e, t] == 0 - shipments,
+                        f"InventoryBalance_{e}_{t}"
+                    )
+                else:
+                    # For days > 1, include previous inventory
+                    prev_available = self.InvDisp[e, t-1]
+                    prev_completed = self.InvAclim[e, 2, t-1]
                     shipments = pl.lpSum([self.S[e, p, t] for p in self.P_siembra])
                     
                     self.model += (
                         self.InvDisp[e, t] == prev_available + prev_completed - shipments,
-                        f"InventoryBalance_{e}_{t}"
-                    )
-                else:
-                    self.model += (
-                        self.InvDisp[e, t] == 0,
                         f"InventoryBalance_{e}_{t}"
                     )
         
@@ -325,15 +323,26 @@ class MathematicalOptimizationModel:
                     f"DailyWorkHourLimit_{t}"
                 )
         
-        # Additional constraint: T_final definition
+        # Additional constraint: T_final definition using big M method
         for t in self.T:
-            # T_final >= t if any activity occurs on day t
+            # Create binary indicator for activity on day t
+            activity_indicator = pl.LpVariable(f"ActivityIndicator_{t}", cat='Binary')
+            
+            # Activity sum for day t
             activities = (
                 pl.lpSum([self.X[e, v, t] for e in self.E for v in self.V]) +
                 pl.lpSum([self.S[e, p, t] for e in self.E for p in self.P_siembra])
             )
+            
+            # If activities > 0, then activity_indicator = 1
             self.model += (
-                self.T_final >= t * (activities / (activities + 1)),
+                activities <= self.M * activity_indicator,
+                f"ActivityIndicator1_{t}"
+            )
+            
+            # If activity_indicator = 1, then T_final >= t
+            self.model += (
+                self.T_final >= t * activity_indicator,
                 f"FinalDayDefinition_{t}"
             )
     
