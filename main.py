@@ -1,9 +1,13 @@
 import pandas as pd
 from datetime import datetime
+import time
 from optimization_framework import SupplyChainState
 from polygon_strategy import PolygonStrategy
 
 def main():
+    # Start timing for total execution
+    total_start_time = time.time()
+    
     print("🌳 Loading reforestation optimization data...")
     
     # Load demand data
@@ -35,6 +39,11 @@ def main():
     print(f"Final warehouse inventory: {state.get_total_warehouse_inventory():,} plants")
     completion_pct = (1 - state.remaining_demand.sum().sum() / demand_df.sum().sum()) * 100
     print(f"Project completion: {completion_pct:.1f}%")
+    
+    # Calculate and print total execution time
+    total_end_time = time.time()
+    total_execution_time = total_end_time - total_start_time
+    print(f"🕒 Total execution time: {total_execution_time:.4f} seconds")
 
 if __name__ == "__main__":
     main() 

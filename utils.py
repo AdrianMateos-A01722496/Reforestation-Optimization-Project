@@ -20,6 +20,12 @@ SPECIES_IDS = list(range(1, 11))
 ALL_POLYGON_IDS = list(range(1, 32))
 PLANTING_POLYGON_IDS = [p for p in ALL_POLYGON_IDS if p != BASE_ID]
 
+DEMAND_DF = pd.read_csv('data/encoded_demand.csv', index_col=0)
+DEMAND_DF.columns = DEMAND_DF.columns.astype(int) # convert colnames from str to int
+
+TIME_DF = pd.read_csv('data/tiempos.csv', index_col=0)
+TIME_DF.columns = TIME_DF.columns.astype(int) # convert colnames from str to int
+
 # Provider costs
 PROVIDER_COSTS = {
     "moctezuma": {3: 26, 4: 26, 5:17, 7:17, 9: 26.5, 10: 26},

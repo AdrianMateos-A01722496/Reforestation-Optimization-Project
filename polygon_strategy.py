@@ -1,6 +1,7 @@
 from typing import List, Tuple, Dict
 import pandas as pd
 import numpy as np
+import time
 from optimization_framework import (
     OptimizationStrategy, SupplyChainState, Order, PlantingActivity,
     TransportationActivity
@@ -17,19 +18,52 @@ from utils import (
 )
 
 class PolygonStrategy(OptimizationStrategy):
-    def __init__(self, state: SupplyChainState, time_matrix: pd.DataFrame):
+    def __init__(self, state: SupplyChainState, time_matrix: pd.DataFrame, max_polygons: int = None):
         super().__init__(state)
         self.time_matrix = time_matrix
+        self.max_polygons = max_polygons  # For testing purposes
+        
         # Convert column names to integers for consistent indexing
         self.time_matrix.columns = self.time_matrix.columns.astype(int)
         # Set diagonal to infinity to avoid selecting P18
         self.time_matrix.loc[BASE_ID, BASE_ID] = np.inf
         
+        # TEMPORAL: Limit polygons for testing if specified
+        if self.max_polygons is not None:
+            self._limit_polygons_for_testing()
+        
         print(f"\nStarting optimization strategy...")
+        if self.max_polygons:
+            print(f"🧪 TESTING MODE: Limited to {self.max_polygons} polygons")
         print(f"Initial demand: {self.state.remaining_demand.sum().sum():,} plants")
+    
+    def _limit_polygons_for_testing(self):
+        """TEMPORAL: Limit the number of polygons for performance testing"""
+        # Get all polygon IDs with demand (excluding warehouse)
+        polygon_demand_totals = self.state.remaining_demand.sum(axis=1)
+        viable_polygons = polygon_demand_totals[polygon_demand_totals > 0].index.tolist()
+        viable_polygons = [p for p in viable_polygons if p != BASE_ID]
+        
+        # Sort by total demand (descending) to keep the most demanding polygons
+        viable_polygons.sort(key=lambda p: polygon_demand_totals[p], reverse=True)
+        
+        # Keep only the top N polygons
+        polygons_to_keep = viable_polygons[:self.max_polygons]
+        polygons_to_remove = [p for p in viable_polygons if p not in polygons_to_keep]
+        
+        # Remove demand for excluded polygons
+        for polygon_id in polygons_to_remove:
+            self.state.remaining_demand.drop(polygon_id, inplace=True)
+        
+        print(f"🔬 Testing setup: Keeping {len(polygons_to_keep)} polygons with highest demand")
+        print(f"   Kept polygons: {sorted(polygons_to_keep)}")
+        print(f"   Removed demand: {polygon_demand_totals[polygons_to_remove].sum():,} plants")
     
     def solve(self) -> None:
         """Solve the optimization problem using a polygon-based strategy"""
+        # Start timing for performance measurement
+        start_time = time.time()
+        
         print("\nStarting optimization strategy...")
         print(f"Initial demand: {self.state.remaining_demand.sum().sum():,} plants")
         
@@ -143,6 +177,11 @@ class PolygonStrategy(OptimizationStrategy):
                     print(f"  Species {i}: {species_demand:,} needed, {inventory:,} available")
         
         print(f"Final warehouse inventory: {self.state.get_total_warehouse_inventory():,} plants")
+        
+        # Calculate and print execution time
+        end_time = time.time()
+        execution_time = end_time - start_time
+        print(f"⏱️  Execution time: {execution_time:.4f} seconds")
     
     def _get_next_polygon(self, exclude_polygons: set = None) -> int:
         """Get the next polygon to plant, prioritizing polygons that need available species"""
